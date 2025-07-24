@@ -11,11 +11,11 @@ from adder.control_group import ControlGroup
 from adder.loggedclass import LoggedClass
 from adder.constants import *
 from adder.msr_reactor import MSRReactor
+from collections import Counter
 
 
 logger = LoggedClass(0, __name__)
 _INDENT = 2
-
 
 def get_input(input_file):
     """Reads the input file located at the input_file path and returns
@@ -46,6 +46,8 @@ def get_input(input_file):
     logger.log("info", "Processing ADDER Input")
     config = ConfigObj(input_file, raise_errors=True,
                        list_values=True, stringify=True)
+
+    # validate input & setting default values
     adder.input_validation.validate(config)
     input_echo(config)
 
@@ -58,6 +60,14 @@ def get_input(input_file):
     if "universes" in config:
         uni_aliases = setup_universe_aliases(config["universes"], rx)
 
+    # check list of matuni names
+    mat_names = [mat.name for mat in rx.materials]
+    check_names(mat_names, "material")
+    if "universes" in rx.neutronics.__dir__():
+        uni_names = [uni.name for uni in rx.neutronics.universes.values()]
+        check_names(uni_names, "universe")
+
+    # setup operations object
     ops = setup_operations(config, mat_aliases, uni_aliases, rx)
 
     logger.log("info", "Completed ADDER Input Processing")
@@ -194,13 +204,57 @@ def setup_reactor(config):
             create_univ_supply_storage(config["universes"]["storage"],
                                        rx, "[universes][[storage]]")
 
+    # Create and associate unique XS libraries to storage materials and
+    # check that all storage materials have densities assigned
+    rx.validate_storage_materials()
+
     # Setup the control group information
     if "control_groups" in config:
         for group_name, data in config["control_groups"].items():
             rx.control_groups[group_name] = ControlGroup(group_name, data)
 
+    # Adding user tallies to be managed by ADDER
+    if "tallies" in config:
+        user_tallies_adder_i = get_user_tallies(config["tallies"])
+        for tally_id in user_tallies_adder_i.keys():
+            logger.log("info_file",
+                       f"Tally {tally_id}, type {user_tallies_adder_i[tally_id]}, processing", 6)
+        rx.user_tallies_adder_i = user_tallies_adder_i
+
     return rx
 
+
+# check for managing tallies
+def get_user_tallies(user_tallies_info):
+    # This parses the config block to get the information
+    # of the tallies to be processed from the ADDER input.
+    user_tallies = OrderedDict()
+    for ssec, subcfg in user_tallies_info.items():
+        # Handle the ids in range, list or item
+        tally_ids = []
+        if ssec.startswith("range"):
+            tally_id_start = subcfg["tally_id_start"]
+            tally_id_end = subcfg["tally_id_end"]
+            exclude = subcfg["exclude_tally_ids"]
+            if exclude is None:
+                exclude = []
+            for id_ in range(tally_id_start, tally_id_end + 1):
+                if id_ not in exclude:
+                    tally_ids.append(id_)
+        elif ssec.startswith("list"):
+            # Handle the list
+            tally_ids = subcfg["tally_ids"]
+        elif ssec.startswith("item"):
+            # End with the individuals
+            tally_ids = [subcfg["tally_id"]]
+
+        # Get the remaining data that doesn't depend on type
+        tally_type = subcfg["type"]
+        # associate tally id to tally type
+        for id_ in tally_ids:
+            user_tallies[str(id_)] = tally_type
+
+    return user_tallies
 
 def get_mat_univ_shuffles(config):
     # This parses the config block to figure out which materials are shuffled
@@ -613,6 +667,12 @@ def setup_material_aliases(config, rx):
     for alias_data in aliases_info.values():
         name = alias_data["name"]
 
+        # check name duplication
+        if name in aliases.keys():
+            msg = "The same name {} is assigned to more".format(name) + \
+                  " than one material alias. Check ADDER input."
+            logger.log("error", msg)
+
         # First we make sure this alias name does not exist in the model
         # as a material
         for model_material in rx.materials:
@@ -650,6 +710,7 @@ def setup_material_aliases(config, rx):
     return aliases
 
 
+
 def setup_universe_aliases(config, rx):
     """Given the config dictionary, this method creates the
     list of aliases to be used with fuel management operations.
@@ -677,29 +738,35 @@ def setup_universe_aliases(config, rx):
     for alias_data in aliases_info.values():
         name = alias_data["name"]
 
+        # check name duplication
+        if name in aliases.keys():
+            msg = "The same name {} is assigned to more".format(name) + \
+                  " than one universe alias. Check ADDER input."
+            logger.log("error", msg)
+
         # First we make sure this alias name does not exist in the model
-        # as a material
-        for model_material in rx.materials:
-            if name == model_material.name:
+        # as a universe
+        for model_universe in rx.neutronics.universes.values():
+            if name == model_universe.name:
                 msg = "Alias {} cannot have the same ".format(name) + \
                     "name as a universe"
                 logger.log("error", msg)
 
         # The validator made sure there was a list of length 1
         # for the set attribute, all that is left is to make sure it is
-        # a valid material name and that all materials in the set are
+        # a valid universe name and that all universes in the set are
         # the same type (supply, storage, in_core)
         alias_set = alias_data["set"]
         statuses = []
-        for alias_material in alias_set:
+        for alias_universe in alias_set:
             match = False
-            for model_material in rx.materials:
-                if model_material.name == alias_material:
-                    statuses.append(model_material.status)
+            for model_universe in rx.neutronics.universes.values():
+                if model_universe.name == alias_universe:
+                    statuses.append(model_universe.status)
                     match = True
                     break
             if not match:
-                msg = "{} from alias {}".format(alias_material, name) + \
+                msg = "{} from alias {}".format(alias_universe, name) + \
                     " is an invalid universe!"
                 logger.log("error", msg)
             else:
@@ -778,10 +845,19 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
                 depletion_method = ssec_data["depletion_method"]
                 depletion_substeps = ssec_data["depletion_substeps"]
                 execute_endpoint = ssec_data["execute_endpoint"]
+                renormalize_power_density = ssec_data["renormalize_power_density"]
+
+                # setting user_tallies . Include is defined in the write
+                user_tallies={}
+                if rx.user_tallies_adder_i:
+                    user_tallies = rx.user_tallies_adder_i
+
+                include_user_tallies = ssec_data["include_user_tallies"]
 
                 method_args = (delta_ts, cumulative_time_steps, powers,
-                               fluxes, depletion_substeps, depletion_method,
-                               execute_endpoint)
+                               fluxes, user_tallies, include_user_tallies,
+                               depletion_substeps, depletion_method, execute_endpoint,
+                               renormalize_power_density)
                 cumulative_time_steps += len(delta_ts)
                 # Store the results
                 if i == 0:
@@ -895,6 +971,8 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
                     angle_units = None
                     matrix = None
                     displacement = [ssec_data["value"], 0., 0.]
+                    matrix_notation="mcnp"
+                    reset = ssec_data["reset"]
                 else:
                     obj_type = ssec_data["type"]
                     obj_set = ssec_data["set"]
@@ -907,6 +985,9 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
                         matrix = np.array(matrix,
                                           dtype=np.float64).reshape((3, 3))
                     displacement = ssec_data["displacement"]
+                    matrix_notation = ssec_data["matrix_notation"]
+                    reset = ssec_data["reset"]
+
 
                     aliases = uni_aliases
 
@@ -916,7 +997,8 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
                 # Now create a transform for each in the set
                 method_name = "transform"
                 method_args = (full_obj_set, yaw, pitch, roll, angle_units,
-                               matrix, displacement, obj_type)
+                               matrix, displacement, obj_type, matrix_notation,
+                               reset)
 
                 if i == 0:
                     ops.append((label, subsection, method_name, method_args))
@@ -928,9 +1010,14 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
                 sweep_group = ssec_data["group_name"]
                 sweep_values = ssec_data["values"]
 
+                user_tallies = {}
+                if rx.user_tallies_adder_i:
+                    user_tallies = rx.user_tallies_adder_i
+                include_user_tallies = ssec_data["include_user_tallies"]
+
                 # Now create a transform for each in the set
                 method_name = "geom_sweep"
-                method_args = (sweep_group, sweep_values)
+                method_args = (sweep_group, sweep_values, user_tallies)
 
                 if i == 0:
                     ops.append((label, subsection, method_name, method_args))
@@ -949,6 +1036,7 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
 
                 k_target = ssec_data["k_target"]
                 bracket_interval = ssec_data["bracket_interval"]
+                reference_position = ssec_data["reference_position"]
                 target_interval = ssec_data["target_interval"]
                 initial_guess = ssec_data["initial_guess"]
                 min_act_batches = ssec_data["min_active_batches"]
@@ -957,8 +1045,9 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
 
                 # Now create a transform for each in the set
                 method_name = "geom_search"
-                method_args = (search_set, k_target, bracket_interval,
-                               target_interval, uncertainty_fraction,
+                method_args = (search_set, k_target, bracket_interval, 
+                               reference_position, target_interval, 
+                               uncertainty_fraction,
                                initial_guess, min_act_batches, max_iterations)
 
                 if i == 0:
@@ -972,12 +1061,20 @@ def setup_operations(config, mat_aliases, uni_aliases, rx):
                 # neutronics solver's input at this particular stage of the
                 # computation
                 fname = ssec_data["filename"]
-                user_tallies = ssec_data["include_user_tallies"]
                 user_output = ssec_data["include_user_output"]
+                include_user_tallies = ssec_data["include_user_tallies"]
                 adder_tallies = ssec_data["include_adder_tallies"]
 
+
+
+                user_tallies = {}
+
+                if rx.user_tallies_adder_i:
+                    user_tallies = rx.user_tallies_adder_i
+
                 method_name = "write_neutronics_input"
-                method_args = (fname, adder_tallies, user_tallies, user_output)
+                method_args = (fname, adder_tallies, user_tallies, include_user_tallies,
+                               user_output)
                 # Store the results
                 if i == 0:
                     ops.append((label, subsection, method_name, method_args))
@@ -1220,3 +1317,11 @@ def _all_equal(iterable):
     except StopIteration:
         return True
     return all(first == rest for rest in iterator)
+
+def check_names(matuni_names, type):
+    # check if each matuni name is used more than once
+    duplicates = [name for name, count in Counter(matuni_names).items() if count > 1]
+    for duplicate in duplicates:
+        msg = "The same name {} is assigned to more ".format(duplicate) + \
+              "than one {}. Check ADDER input.".format(type)
+        logger.log("error", msg)

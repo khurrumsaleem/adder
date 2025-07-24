@@ -1,0 +1,129 @@
+case_name = ADDER-Training_Exercise-1
+neutronics_solver = "mcnp"
+neutronics_exec = mcnp.EXE
+use_depletion_library_xs = False
+neutronics_input_file = test.inp
+neutronics_library_file = ./xsdir
+depletion_chunksize = 100
+depletion_substeps = 1
+depletion_solver = cram16
+depletion_method = "predictor"
+depletion_library_file = test.h5
+depletion_library_name = test
+output_hdf5 = results.h5
+
+[materials]
+    [[metadata]]
+        [[[item_fuel]]]
+            neutronics_id = 1
+            volume = 1.570796
+            name = "fuel"
+        [[[item_water]]]
+            neutronics_id = 2
+    	    depleting = False
+            name = "water"
+        [[[item_control]]]
+            neutronics_id = 3
+            non_depleting_isotopes = Al27
+            depleting = False
+            name = "control_rod"
+
+[universes]
+    [[metadata]]
+        [[[list]]]
+            neutronics_ids = 1, 2, 3, 4, 6, 9
+            names = P1, P2, P3, P4, Pcentral, Pcentral2
+        [[supply]]
+            [[[copy]]]
+                [[[[item_ps]]]]
+                    neutronics_id=5
+                    name = PS
+                [[[[item_ps3]]]]
+                    neutronics_id=5
+                    name = PS2
+        [[storage]]
+            [[[redefine]]]
+                [[[[item]]]]
+                    neutronics_id = 5
+
+[control_groups]
+    [[control_rod]]
+        set = 41, 42
+        type = surface
+        axis = z
+[tallies]
+    [[list]]
+    tally_ids = 4, 14, 24, 54, 64, 6, 7
+    type = universe
+
+[operations]
+    [[state 1]]
+        label = "1st step- depletion"
+        [[[deplete]]]
+            powers = 1
+            durations = 1
+            execute_endpoint = False
+            include_user_tallies = True
+        [[[deplete_notallies]]]
+            powers = 1
+            durations = 1
+            execute_endpoint = False
+            include_user_tallies = False
+    [[state 2]]
+        label = "2nd step - shuffling P2 to P1"
+        [[[shuffle]]]
+            type = universe
+            moves = P2, P1
+        [[[write_input]]]
+             filename = 2nd_step_shuffling_p2p1.inp
+             include_user_tallies = True
+    [[state 3]]
+        label = "3rd step - shuffling PS (supply/out core) to P1"
+        [[[shuffle]]]
+            type = universe
+            moves = PS, P1
+        [[[deplete]]]
+            powers = 1
+            durations = 1
+            execute_endpoint = False
+            include_user_tallies = True
+    [[state 4]]
+        label = "4th step - shuffling P1 (out core) to P3"
+        [[[shuffle]]]
+            type = universe
+            moves = P1, P2
+        [[[write_input]]]
+             filename = 4th_step_shuffling_p1_p2.inp
+             include_user_tallies = False
+        [[[deplete]]]
+            powers = 1
+            durations = 1
+            execute_endpoint = False
+            include_user_tallies = True
+    [[state 5]]
+        label = "5th step - shuffling PS (supply 2/out core) to P4"
+        [[[shuffle]]]
+            type = universe
+            moves = PS, P4
+        [[[write_input]]]
+             filename = 5th_step_shuffling_ps2nd_p4.inp
+    [[state 6]]
+        label = "6th step - shuffling PS2 (out core) to P1"
+        [[[shuffle]]]
+            type = universe
+            moves = PS2, P1
+        [[[write_input]]]
+             filename = 6th_step_shuffling_ps2_p4.inp
+    [[state 7]]
+        label = "7th step - 5 and Pcentr.2 in core"
+         [[[shuffle_1]]]
+            type = universe
+            moves = 5, PS2[1]
+        [[[shuffle_2]]]
+            type = universe
+            moves = Pcentral2, Pcentral
+        [[[deplete]]]
+            powers = 1
+            durations = 1
+            execute_endpoint = False
+            include_user_tallies = True

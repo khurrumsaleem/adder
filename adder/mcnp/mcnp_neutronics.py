@@ -5,20 +5,27 @@ import os
 import glob
 import copy
 import re
+from itertools import product
 
 import numpy as np
 
-from adder.isotope import update_isotope_depleting_status
+import adder.isotope
 from adder.material import Material
 from adder.neutronics import Neutronics
 from adder.constants import *
 from adder.type_checker import *
+from adder.mcnp.tally import *
 from adder.utils import get_transform_args
+from adder.data import get_metadata
+from adder.loggedclass import LoggedClass
+logger = LoggedClass(0, __name__)
+_INDENT = 2
+from .tally import Tally
 
 from . import input_methods
-from . import input_utils
 from . import initialize_data
 from . import output_methods
+from . import input_utils
 from .cell import Cell
 from .constants import MAX_LINE_LEN, TALLY_MAX_ID, MATL_MAX_ID, ROOT_UNIV, \
     NEWLINE_COMMENT, MCNP_OUT_SUFFIX, MCNP_OUT_NAMES, MCNP_FF_SUFFIX, CI_995, \
@@ -79,6 +86,9 @@ class McnpNeutronics(Neutronics):
         Whether or not to use the depletion library's cross sections
     base_input : None or OrderedDict
         The contents of the base input neutronics solver file.
+    user_tallies_d: dict
+        The user tally dict (key is tally id) get by filtering the original MCNP input tallies
+        with the ones selected in the ADDER input.
     inputs : Iterable of OrderedDict
         The input files produced at each time; the dimension of the
         iterable is the time index, and the dictionary contains the
@@ -110,6 +120,13 @@ class McnpNeutronics(Neutronics):
 
     VALID_SHUFFLE_TYPES = ("material", "universe")
     VALID_TRANSFORM_TYPES = ("universe", "cell", "surface")
+
+    def __init__(self, mpi_cmd, exec_cmd, base_input_filename, num_threads,
+                 num_procs, use_depletion_library_xs, reactivity_threshold,
+                 reactivity_threshold_initial):
+        super().__init__(mpi_cmd, exec_cmd, base_input_filename, num_threads, num_procs, use_depletion_library_xs,
+                         reactivity_threshold, reactivity_threshold_initial)
+
 
     @property
     def solver(self):
@@ -230,7 +247,7 @@ class McnpNeutronics(Neutronics):
         # the univ/mat is not in the root universe, then it has a
         # status of supply
         root_univ_ids = [ROOT_UNIV] + \
-            self.universes[ROOT_UNIV].nested_universe_ids
+                        self.universes[ROOT_UNIV].nested_universe_ids
         for univ_id, univ in self.universes.items():
             if univ_id in root_univ_ids:
                 univ.status = IN_CORE
@@ -238,12 +255,367 @@ class McnpNeutronics(Neutronics):
                 univ.status = SUPPLY
 
         self._rxn_rate_tally_map = None
-        self._isos_and_rxn_keys = None   # This would need to be set back to 1
+        self._isos_and_rxn_keys = None  # This would need to be set back to 1
         # if somehow the isotopes in the depletion library change after
         # the first MCNP input is written w/ rxn rate tallies
 
-    def read_input(self, library_file, num_neutron_groups, user_mats_info,
-                   user_univ_info, shuffled_mats, shuffled_univs, depl_libs):
+    def process_user_tallies(self, user_tallies_adder_i, user_tallies_mcnp, tallies_ids):
+        """This method process user tallies considering the specification reported in
+        the ADDER input and user tallies defined in the MCNP input.
+
+        Parameters
+        ----------
+        user_tallies_adder_i : dict
+            Dictionary containing specification in the adder input
+            under tally subsection
+        user_tallies_mcnp : dict
+            Dictionary contaning the information of the user tallies defined in
+            the MCNP input
+
+        Returns
+        -------
+        tally_block: list
+        List of string containing the lines corresponding to the user tally
+        specification for the MCNP input
+        """
+
+
+        # set user tallies by filter orig. MCNP tallies as selected in ADDER input
+        if "user_tallies" not in self.__dir__():
+            self.user_tallies = {}
+            self.mats_ids_tally_cloned = set()
+            # change function to get user_tallies_process, user_tallies_to_copy
+            # get dictionary from and initialize user tally
+            self.user_tallies = {tally.id: tally for tally in user_tallies_mcnp}
+            self.ids_tally_proc = check_tally_ids(list(self.user_tallies.keys()),
+                                             list(user_tallies_adder_i.keys()))
+            self.ids_tally_copy = list(set(self.user_tallies.keys())-set(self.ids_tally_proc))
+            # assign tally type.
+            for tally_id in self.ids_tally_proc:
+                self.user_tallies[tally_id].type = user_tallies_adder_i[str(tally_id)]
+            # convert keys to string
+            keys_string = ', '.join([str(key) for key in user_tallies_adder_i.keys()])
+
+        # model cells, materials and their ids of the current mcnp geometry.
+        model_cells = self.universes[ROOT_UNIV].nested_cells
+        model_materials = self.universes[ROOT_UNIV].nested_materials
+        cell_ids = sorted(model_cells.keys())
+        material_ids = sorted(model_materials.keys())
+
+        # ids_list containing mcnp, adder and depletion tallies, and assign user_tallies
+        user_tallies_l = [self.user_tallies[key] for key in self.ids_tally_proc]
+        ids_list = [tally.id for tally in
+                    list(set(list(self.user_tallies.values()) + self.base_input["tally"]))]
+        ids_list.extend(tallies_ids)
+
+        """
+        cell_to_mat_map: mapping between cell and mat ids
+        model_*_map: mapping between children and parent ids for cells & mats
+        """
+        cell_to_mat_map = map_entities(model_cells, attr="material_id")
+        model_cells_map = map_entities(model_cells, attr="parent_id")
+        model_materials_map = map_entities(model_materials, attr="parent_id")
+
+        # initialize variable processed later
+        tally_block = ["c User tallies "]
+        # add tally as is to the block
+        for tally_id in self.ids_tally_copy:
+            tally_block.extend(self.user_tallies[tally_id].get_tally_block())
+        tally_user_clones_l = []
+        f_card_mat = ""
+        mats_ids_process = set()
+
+        for tally in user_tallies_l:
+            """
+            - entity group: entity is referred to a surface or a cell.
+                            Here, entity group is a group of cells or surfaces 
+                            as defined in the orig. mcnp input for Fn and CFn cards, 
+                            typically within parentheses. Below, their diff. forms: 
+                            * simple: Si, Ci,...
+                            * simple w/ parentheses: (Ci...Cn), (Si...Sn),... 
+                            * complex [rep. structure]: ((Si..Sn)<(Cm Cn[Ij..Ik])<(Cl Ck[Ij..Ik])...(Cp Co)),...
+                                where Si is surf or cell, Ci is cell
+            - entit_groups_l: list of entity groups, included in the tally
+                                line specification.
+            - tally_match: True if finding the match between all tally entity groups and 
+                            the entities in the mcnp geometry.
+                           False if at least one entity is not matched.
+            - tally_copy: True if finding match for parents and children ids 
+                          for all tally entity groups. In this case, a clone
+                          for the matching tally is generated.
+                          False if at least one entity is not matched
+            NB: if tally_copy is True, tally_match will be False and vice versa.
+                tally_match and tally_copy can be both False, and in this case 
+                no tally or clone is written in the generated mcnp input file.
+            NB2: entity types are "cell" or "surface", referring to the tally definition
+                through the mcnp syntax.
+                tally types are "universe" or "material", referring to the ADDER management
+                if universes or materials are processed
+            """
+
+            # assign entity type for f card processing
+            if tally.id_type == 4 or tally.id_type == 6 or tally.id_type == 7:
+                if tally.fmesh_card:
+                    tally_block.extend(tally.get_tally_block())
+                    continue
+                else:
+                    tally.entity_type_f_card = "cell"
+            else:
+                # in this case, tally not processed and just copied
+                tally.entity_type_f_card = "surface"
+                tally_block.extend(tally.get_tally_block())
+                continue
+
+            # dict., list to store and process tally clonation
+            # w/ Fn & CFn card. Set default match and copy to False
+            clone_entit_groups_d = {}
+            clone_entit_groups_cf_d = {}
+            tally_clones_l = []
+            tally_match, tally_copy = False, False
+            tally_match_cf, tally_copy_cf = False, False
+
+            # processing universe tally type
+            if tally.type == "universe":
+
+                # analyze and match identity groups for Fn and CFn cards
+                # Fn parsing
+                f_entit_groups_l = card_entities_parsing(tally.f_card)
+                # CFn card parsing
+                if tally.cf_card:
+                    cf_card = tally.cf_card
+                    cf_cells = ' '.join(cf_card.split()[1:])
+                    cf_entit_groups_l = card_entities_parsing(cf_cells)
+                else:
+                    cf_entit_groups_l = []
+
+                # tally match with Fn and CFn card
+                tally_match, tally_copy, clone_entit_groups_d = tally.analyze_entity_groups(f_entit_groups_l,
+                                                                                      model_cells_map, model_cells,
+                                                                                            tally, fcheck=True)
+                tally_match_cf, tally_copy_cf, clone_entit_groups_cf_d = tally.analyze_entity_groups(cf_entit_groups_l,
+                                                                                               model_cells_map,
+                                                                                                model_cells, tally,
+                                                                                                     fcheck=False)
+
+            # processing material tally type
+            elif tally.type == "material":
+
+                # the process requires assignment of tally to materials
+                # through the f_card_mat attribute, and changing f_card
+                # attribute accordingly
+                f_card, f_card_mat = tally.f_card, tally.f_card_mat
+
+                # tally not assigned to f_card_mat have just cells associated
+                # by the user in the original input
+                if not f_card_mat:
+
+                    # get f_card_mat and materials tally from f_card
+                    f_card_mat = substit_f_card(f_card, convert_map_to_int(cell_to_mat_map))
+                    # extract set of materials
+                    # Regular expression to match numbers not within square brackets
+                    pattern = r'(?<!\[)(?<!\d)(\b\d+\b)(?!\d)(?!\])'
+                    # Use re.findall to extract all matching numbers as strings
+                    numbers = re.findall(pattern, f_card_mat)
+                    # Convert the list of strings to a set of integers
+                    mats_ids = {int(num) for num in numbers}
+                    mats_ids_process.update(mats_ids)
+
+                    # tally is duplicate if not already duplicated,
+                    # and assigned to mats filling the cell to which the original f_card is referring
+                    tally_match, tally_copy, tally_clone, ids_list = tally.create_tally_clone_mat(tally.id + 10,
+                                                                                            ids_list, f_card_mat,
+                                                                                            user_tallies_l,
+                                                                                            mats_ids,
+                                                                                            self.mats_ids_tally_cloned)
+
+                    # extend to tally block and append to clone if cloned. There's no need to check if
+                    # match w/ mats at this depl. step, since it's cloned from cells filled w/ these
+                    # materials
+                    if tally_copy:
+                        tally_block.extend(tally_clone.get_tally_block())
+                        tally_user_clones_l.append(tally_clone)
+                        continue
+
+                else:
+                    # here, check for an already duplicated tally
+                    f_entit_groups_l = card_entities_parsing(tally.f_card_mat)
+                    tally_match, tally_copy, clone_entit_groups_d = tally.analyze_entity_groups(f_entit_groups_l,
+                                                                                          model_materials_map,
+                                                                                          model_cells, tally,
+                                                                                                fcheck=True)
+
+
+
+            """
+            Process. and generat. tally clones from clone_entit_groups_d dictionary.
+            """
+            if tally_copy:
+                # creating tally clone list
+                ids_list, tally_clones_l = tally.create_tally_clone_l(clone_entit_groups_d, user_tallies_l,
+                                                                ids_list)
+
+                # update cf card for clones of universe type tallies.
+                if clone_entit_groups_cf_d != {}:
+                    tally_clones_l = tally.update_cf_card(tally_match, tally_copy, tally_match_cf,
+                                                    tally_copy_cf, clone_entit_groups_cf_d, tally_clones_l)
+
+                # extend tally block for new tally clones
+                if tally_clones_l:
+                    # update fm clone card before printing tally block
+                    for tally_cl in tally_clones_l:
+                        logger.log("info_file",
+                                   f"Tally {tally.id} cloned as tally {tally_cl.id}", 10)
+                        if tally_cl.fm_card:
+                            tally_cl.check_fm_card(cell_to_mat_map, model_materials_map)
+
+                    # extend tally block to include tally_clones
+                    [tally_block.extend(tally_cl.get_tally_block()) for tally_cl in tally_clones_l]
+
+                    # add current tally clones to user tally clones
+                    tally_user_clones_l.extend(tally_clones_l.copy())
+
+            """
+            Processing match between existing tallies. The latter don't include 
+            new clones, but tallies from the orig. mcnp input or "old" clones.
+            """
+            if tally_match or tally.type == "unprocessed":
+                # update f_card, considering cells filled by mats in f_card_mat
+                if tally.type == "material":
+                    tally.f_card = substit_f_card(f_card_mat, convert_map_to_int(inverse_map_cells(cell_to_mat_map)))
+
+                tally_block.extend(tally.get_tally_block())
+
+            """
+            Pass no match between all tally entities & cells/mats
+            """
+            if not (tally_match and tally_copy):
+                tally.tally_block = []
+                tally.facet_ids = []
+                tally.tally_matrix = np.array([])
+                tally.tally_matrix_err = np.array([])
+                pass
+
+        # include clones in tally list
+        for tally_user_clone in tally_user_clones_l.copy():
+            self.user_tallies[tally_user_clone.id] = tally_user_clone
+            self.ids_tally_proc.append(tally_user_clone.id)
+
+        # update mats set for materials cloned with mats just processed
+        self.mats_ids_tally_cloned.update(mats_ids_process)
+
+        # include tally_block for tallies written in MCNP input.
+        if tally_block == ["c User tallies "]:
+            tally_block = []
+
+        return tally_block
+
+
+
+    def parse_library(self, library_data):
+        """Parses the neutronics library data for establishing the isotope
+        registry
+
+        Parameters
+        ----------
+        library_data : str or None
+            The filename and path to the library data. If None, then it must
+            be obtained from the environment or input, depending on the solver.
+
+        Returns
+        -------
+        neutronics_library_isos : dict
+            The keys are the isotope names in GND format and the values are an
+            Iterable of associated library names available in the neutronics
+            library
+        """
+
+        # To properly process the xsdir data, we need to (1) see if we are
+        # supposed to get the xsdir from the messages header of the mcnp inp
+        # file, and (2) see if there are any XSn cards in the input that we
+        # need to be aware of.  So, lets just read it now and store the info
+        # for later
+        filename = self.base_input_filename
+
+        # Get the information from the input file
+        messages, title, cell_block, surface_cards, data = \
+            input_methods.get_blocks(filename)
+        parsed_transforms, data = input_methods.parse_transforms(data)
+        parsed_surfaces = input_methods.parse_surfaces(surface_cards,
+                                                       parsed_transforms)
+        parsed_cells = input_methods.parse_cells(cell_block, parsed_transforms)
+        m_data, m_default_nlib, mt_data, material_cards, other_cards = \
+            input_methods.parse_materials(data)
+        tally_data, tmesh_card, other_cards, max_tally_id, multiplier_mat_ids = \
+            input_methods.get_tallies(other_cards)
+        output_data, other_cards = input_methods.get_output(other_cards)
+        user_sim_settings, other_cards = \
+            input_methods.get_sim_settings(other_cards)
+
+        self._input_data = messages, title, parsed_transforms, \
+            parsed_surfaces, parsed_cells, m_data, m_default_nlib, mt_data, \
+            material_cards, tally_data, max_tally_id, multiplier_mat_ids, \
+            output_data, user_sim_settings, tmesh_card, other_cards
+
+        # See if there is an xsdir in the messages block
+        message_xsdir = None
+        for msg_line in messages:
+            if "xsdir=" in msg_line:
+                message_xsdir = msg_line.split("xsdir=")[1].split()[0]
+
+        if library_data is None:
+            # Either use message xsdir or the environment default
+            if message_xsdir is not None:
+                self.xsdir_file = message_xsdir
+            else:
+                self.xsdir_file = os.environ["DATAPATH"] + "/" + \
+                                  _MCNP_XSDIR_FILENAME
+        else:
+            if message_xsdir is not None:
+                # Then we need to tell the user if the message xsdir
+                # conflicts
+                msg = "The MCNP input's MESSAGE block contains an xsdir " + \
+                      "file; this will be replaced with the " + \
+                      "'neutronics_library_file' provided in the ADDER input."
+                self.log("INFO_FILE", msg)
+            self.xsdir_file = library_data
+
+        # Get the information from our xsdir file
+        xs_updates, awtab_updates = input_methods.get_xs_awtab(other_cards)
+        self.neutronics_isotopes = \
+            initialize_data.parse_xsdir(self.xsdir_file, xs_updates,
+                                        awtab_updates)
+
+        # Finally lets create the desired return value
+        neutronics_library_isos = {}
+        for zaid in self.neutronics_isotopes.keys():
+            # Convert MCNP zaid.xyz* to an isotope name and lib name
+            index_separator = zaid.find(".")
+
+            if index_separator == -1:
+                msg = "xsdir contains data without a library identifier!"
+                raise ValueError(msg)
+
+            # Check to see if the prefix is for a zaid or s(a,b) library
+            library_prefix = zaid[:index_separator]
+            if library_prefix.isnumeric():
+                zaid_num = input_utils.num_format(library_prefix, 'int')
+                lib_name = zaid[index_separator + 1:]
+
+                iso_name, _, _, _, _ = \
+                    get_metadata(zaid_num, metastable_scheme="mcnp")
+
+                # Now include this in our data.
+                if iso_name in neutronics_library_isos:
+                    # Add lib_name to existing set
+                    neutronics_library_isos[iso_name].add(lib_name)
+                else:
+                    neutronics_library_isos[iso_name] = set([lib_name])
+
+        return neutronics_library_isos
+
+
+    def read_input(self, num_neutron_groups, user_mats_info, user_univ_info,
+                   shuffled_mats, shuffled_univs, depl_libs):
         """Return parsed information about an MCNP input file, including
         all the information needed to initialize adder.Material objects.
 
@@ -257,14 +629,13 @@ class McnpNeutronics(Neutronics):
 
         Parameters
         ----------
-        library_file : str
-            The filename and path to the xsdir file
         num_neutron_groups : int
             The number of energy groups
         user_mats_info : OrderedDict
             The keys are the ids in the neutronics solver and
             the value is an OrderedDict of the name, depleting boolean,
-            ex_core_status, non_depleting_isotopes list, and
+            volume, density, non_depleting_isotopes list, 
+            apply_reactivity_threshold_to_initial_inventory flag, and 
             use_default_depletion_library flag.
         user_univ_info : OrderedDict
             The keys are the universe ids in the neutronics solver and
@@ -284,46 +655,13 @@ class McnpNeutronics(Neutronics):
             available at this stage, this must be overwritten upstream.
         """
 
-        filename = self.base_input_filename
-
-        # Get the information from the input file
-        messages, title, cell_block, surface_cards, data = \
-            input_methods.get_blocks(filename)
-        parsed_transforms, data = input_methods.parse_transforms(data)
-        parsed_surfaces = input_methods.parse_surfaces(surface_cards,
-                                                       parsed_transforms)
-        parsed_cells = input_methods.parse_cells(cell_block, parsed_transforms)
-        m_data, m_default_nlib, mt_data, material_cards, other_cards = \
-            input_methods.parse_materials(data)
-        tally_data, other_cards, max_tally_id, multiplier_mat_ids = \
-            input_methods.get_tallies(other_cards)
-        output_data, other_cards = input_methods.get_output(other_cards)
-        user_sim_settings, other_cards = \
-            input_methods.get_sim_settings(other_cards)
-
-        # Handle xsdir information
-        # See if there is an xsdir in the messages block
-        message_xsdir = None
-        for msg_line in messages:
-            if "xsdir=" in msg_line:
-                message_xsdir = msg_line.split("xsdir=")[1].split()[0]
-
-        if library_file is None:
-            # Either use message xsdir or the environment default
-            if message_xsdir is not None:
-                self.xsdir_file = message_xsdir
-            else:
-                self.xsdir_file = os.environ["DATAPATH"] + "/" + \
-                    _MCNP_XSDIR_FILENAME
-        else:
-            if message_xsdir is not None:
-                # Then we need to tell the user if the message xsdir
-                # conflicts
-                msg = "The MCNP input's MESSAGE block contains an xsdir " + \
-                    "file; this will be replaced with the " + \
-                    "'neutronics_library_file' provided in the ADDER input."
-                self.log("INFO_FILE", msg)
-            self.xsdir_file = library_file
+        messages, title, parsed_transforms, parsed_surfaces, parsed_cells, \
+            m_data, m_default_nlib, mt_data, material_cards, \
+            tally_data, max_tally_id, multiplier_mat_ids, \
+            output_data, user_sim_settings, tmesh_card, other_cards = \
+            self._input_data
+        # Lets not carry around input data anymore
+        del self._input_data
 
         # Now put the xsdir message in the message block
         if messages:
@@ -347,12 +685,6 @@ class McnpNeutronics(Neutronics):
             # Does not have anything, add
             messages.append("message: xsdir={}".format(self.xsdir_file))
 
-        # Get the information from our xsdir file
-        xs_updates, awtab_updates = input_methods.get_xs_awtab(other_cards)
-        self.neutronics_isotopes = \
-            initialize_data.parse_xsdir(self.xsdir_file, xs_updates,
-                                        awtab_updates)
-
         # Put all of our input data into an input dictionary
         input_cards = OrderedDict()
         input_cards["message"] = messages
@@ -360,6 +692,7 @@ class McnpNeutronics(Neutronics):
         input_cards["material"] = material_cards
         input_cards["tally"] = tally_data
         input_cards["output"] = output_data
+        input_cards["tmesh"] = tmesh_card
         input_cards["other"] = other_cards
         self.base_input = input_cards
         self.max_user_tally_id = max_tally_id
@@ -406,14 +739,16 @@ class McnpNeutronics(Neutronics):
             cell_densities = [self.cells[c_id].density for c_id in cell_ids]
 
             if len(cell_ids) > 0:
-                # We will initialize just the first one
-                density = cell_densities[0]
-                isotopic_data, new_cell_density = \
-                    input_methods.convert_density(data, density)
 
-                # But update all other cell densities after this conversion
-                for cell_id in cell_ids:
-                    self.cells[cell_id].density *= new_cell_density / density
+                # Set cell densities
+                for i, cell_id in enumerate(cell_ids):
+
+                    density = cell_densities[i]
+
+                    isotopic_data, new_cell_density = \
+                        input_methods.convert_density(data, density)
+
+                    self.cells[cell_id].density = new_cell_density
 
                 # Set to in-core, and we will have to let universe
                 # initialization assign correctly
@@ -439,8 +774,8 @@ class McnpNeutronics(Neutronics):
                 iso_name, fraction, nlib = isotopic_data[i]
                 if iso_name in iso_names:
                     msg = f"Material id: {mat_id} " \
-                        f"contains {iso_name} multiple times. " \
-                        "Only one entry is supported."
+                          f"contains {iso_name} multiple times. " \
+                          "Only one entry is supported."
                     self.log("ERROR", msg)
                 else:
                     iso_names.add(iso_name)
@@ -455,7 +790,7 @@ class McnpNeutronics(Neutronics):
                 density = self.cells[cell_ids[0]].density
                 volume = self.cells[cell_ids[0]].volume
             else:
-                density = 1.
+                density = 0.
                 volume = None
 
             depleting = True
@@ -480,13 +815,13 @@ class McnpNeutronics(Neutronics):
             # Since this is our initial input parsing, raise an error if the
             # material has isotopes that are not in the neutronics library
             for i in range(material.num_isotopes):
-                iso = material.isotopes[i]
+                iso = material.isotope_obj(i)
                 zaid = input_methods._zam_to_mcnp(
                     iso.Z, iso.A, iso.M, iso.xs_library)
                 if zaid not in self.neutronics_isotopes:
                     msg = f"Material {material.name} (id: {material.id}) " \
-                        f"contains {zaid} which is not present in the xsdir " \
-                        "file"
+                          f"contains {zaid} which is not present in the xsdir " \
+                          "file"
                     self.log("ERROR", msg)
 
             # If we are using the depletion library xs, then just set
@@ -512,16 +847,17 @@ class McnpNeutronics(Neutronics):
                 if len(user_mats_info[mat_id][key]) > 0:
                     # Then we have specific values
                     for i in range(material.num_isotopes):
-                        orig_iso = material.isotopes[i]
+                        orig_iso = material.isotope_obj(i)
+                        orig_iso_idx = material.isotopes[i]
                         if orig_iso.name in user_mats_info[mat_id][key]:
-                            new_iso = update_isotope_depleting_status(orig_iso,
-                                                                      False)
-                            material.isotopes[i] = new_iso
+                            material.isotopes[i] = \
+                                adder.isotope.ISO_REGISTRY.switch_iso_depleting_status(
+                                    orig_iso_idx, False)
 
                 # Now apply the reactivity_threshold_initial information
                 key = "apply_reactivity_threshold_to_initial_inventory"
                 if key in user_mats_info[mat_id] and \
-                    user_mats_info[mat_id][key] is not None:
+                        user_mats_info[mat_id][key] is not None:
                     mat_reactivity_threshold_initial = \
                         user_mats_info[mat_id][key]
                 else:
@@ -529,7 +865,7 @@ class McnpNeutronics(Neutronics):
                         self.reactivity_threshold_initial
             else:
                 mat_reactivity_threshold_initial = \
-                        self.reactivity_threshold_initial
+                    self.reactivity_threshold_initial
 
             material.establish_initial_isotopes(
                 mat_reactivity_threshold_initial)
@@ -548,14 +884,14 @@ class McnpNeutronics(Neutronics):
         # Now create the duplicate materials for the materials present
         # in multiple locations (if depleted or shuffled)
         self.log("info", "Cloning Depleting, Shuffled, or "
-                    "Cross-Universe Materials", 4)
+                         "Cross-Universe Materials", 4)
         Nmat = len(materials)
         for m in range(Nmat):
             mat = materials[m]
             mat_id = mat.id
             if mat_id in cell_ids_by_mat and len(cell_ids_by_mat[mat_id]) > 1:
                 if mat.is_depleting or mat.name in shuffled_mats or \
-                    len(univ_ids_by_mat[mat_id]) > 1:
+                        len(univ_ids_by_mat[mat_id]) > 1:
 
                     for c in cell_ids_by_mat[mat_id][1:]:
                         # Then we have multiple instances of a shuffled and/or
@@ -566,7 +902,11 @@ class McnpNeutronics(Neutronics):
                         msg = "Material {} cloned as material {}".format(
                             mat.name, new_mat.name)
                         self.log("info_file", msg)
-                        new_mat.density = self.cells[c].density
+                        if (mat.id in user_mats_info and 
+                            user_mats_info[mat.id]["density"] is not None):
+                            new_mat.density = user_mats_info[mat.id]["density"]
+                        else:
+                            new_mat.density = self.cells[c].density
                         if self.cells[c].volume:
                             new_mat.volume = self.cells[c].volume
                         self.cells[c].material_id = new_mat.id
@@ -625,6 +965,7 @@ class McnpNeutronics(Neutronics):
             for message in messages:
                 file_string += input_utils.card_format(message)
             file_string += "\nCONTINUE\n"
+            file_string += "\nCONTINUE\n"
 
         # Now just add in the modified kcode card
         file_string += input_utils.card_format(self.sim_settings.kcode_str)
@@ -632,10 +973,10 @@ class McnpNeutronics(Neutronics):
 
         with open(filename, "w") as file:
             file.write(file_string)
-
+    # insert tallies list
     def write_input(self, filename, label, materials, depl_libs, store_input,
-                    deplete_tallies, user_tallies, user_output,
-                    update_iso_status=True):
+                    deplete_tallies, user_tallies_adder_i, include_user_tallies,
+                    user_output, update_iso_status=True):
         """Updates the input for the particular run case
 
         Parameters
@@ -652,8 +993,12 @@ class McnpNeutronics(Neutronics):
             Whether or not to store the input file in :attrib:`inputs`
         deplete_tallies : bool
             Whether or not to write the tallies needed for depletion
-        user_tallies : bool
-            Whether or not to write the user tallies
+        user_tallies : dict
+            Dict of tally objects
+        user_tallies_adder_i : dictionary
+            Dictionary containing info from ADDER input
+        include_user_tallies : bool
+            Including or not user tallies in the input.
         user_output : bool
             Whether or not to write the user's output control cards
         update_iso_status : bool, optional
@@ -671,13 +1016,13 @@ class McnpNeutronics(Neutronics):
         messages = input_cards["message"]
         title = self.base_input["title"] + " " + label
         if len(title) > MAX_LINE_LEN:
-            title = self.base_input["title"][0:MAX_LINE_LEN - (len(label) + 6)]\
+            title = self.base_input["title"][0:MAX_LINE_LEN - (len(label) + 6)] \
                     + "[...] " + label
 
         model_mats = self.universes[ROOT_UNIV].nested_materials
         if update_iso_status:
             self.log("info_file",
-                    "Evaluating Which Isotopes to Include in MCNP Model", 10)
+                     "Evaluating Which Isotopes to Include in MCNP Model", 10)
             for mat_id, mat in model_mats.items():
                 mat = model_mats[mat_id]
                 # Update the isotopes in neutronics status
@@ -689,10 +1034,10 @@ class McnpNeutronics(Neutronics):
                     # isotopes carefully.
                     lib = depl_libs[mat.depl_lib_name]
                     mat.determine_important_isotopes(lib,
-                        self.reactivity_threshold)
+                                                     self.reactivity_threshold)
                     # Next only allow isotopes that we have MCNP libs for
                     for i in range(mat.num_isotopes):
-                        iso = mat.isotopes[i]
+                        iso = mat.isotope_obj(i)
                         if mat.isotopes_in_neutronics[i]:
                             zaid = input_methods._zam_to_mcnp(
                                 iso.Z, iso.A, iso.M, iso.xs_library)
@@ -700,37 +1045,45 @@ class McnpNeutronics(Neutronics):
                                 mat.isotopes_in_neutronics[i] = False
 
         self.log("info_file", "Preparing Tally Cards", 10)
-        tallies = []
+        tallies, tallies_ids = [], []
         # Add in the tallies that ADDER wants
         if deplete_tallies:
             # We are going to need the flux for the depletion, and
             # if needed, for normalizing the reaction rates, so lets get
             # that.
-            tallies.extend(
-                input_methods.create_material_flux_tallies(self.universes,
-                    depl_libs))
+            cards, t_id = input_methods.create_material_flux_tallies(self.universes, depl_libs)
+
+            tallies.extend(cards)
+            tallies_ids.append(t_id)
 
             if not self.use_depletion_library_xs:
                 # Now, if we are updating the depletion library, we
                 # also need to populate the tallies for the reaction
                 # rates of interest. Determine what these are, and add
                 # their tally cards.
-                rr_tallies, self._rxn_rate_tally_map, \
+                rr_tallies_ids, rr_tallies, self._rxn_rate_tally_map, \
                     self._isos_and_rxn_keys = \
-                        input_methods.create_rxn_rate_tallies(
-                            self.universes, self.neutronics_isotopes,
-                            self._isos_and_rxn_keys, depl_libs)
+                    input_methods.create_rxn_rate_tallies(
+                        self.universes, self.neutronics_isotopes,
+                        self._isos_and_rxn_keys, depl_libs)
                 # Store the tallies, and the unique cell sets for usage when
                 # getting results
                 tallies.extend(rr_tallies)
+                tallies_ids.extend(rr_tallies_ids)
 
-        # And put in the ones the user requested
-        # (these have already been verified to not have conflicting IDs with
-        #  the ADDER IDs)
-        if user_tallies:
-            # We have to use the tally card from the base input to get
-            # the user tallies, and not what ADDER has done to it since
-            tallies.extend(self.base_input["tally"])
+        # get tallies for fmesh
+        user_tallies_mcnp = self.base_input["tally"]
+        fmesh_block = []
+
+        # get tallies matching with the ones in [tallies] section in ADDER input.
+        if include_user_tallies:
+            user_tally_block = self.process_user_tallies(user_tallies_adder_i, user_tallies_mcnp, tallies_ids)
+            tallies.extend(user_tally_block)
+
+        # add tmesh block
+        tmesh_block = self.base_input["tmesh"]
+        if tmesh_block:
+            tallies.extend(tmesh_block)
 
         # Set the output cards while incorporating user output when needed
         if user_output:
@@ -742,8 +1095,8 @@ class McnpNeutronics(Neutronics):
 
         others = input_cards["other"]
 
-        # Get the materials in card form
-        if user_tallies:
+        # Get the materials multiplier ids
+        if user_tallies_adder_i:
             multiplier_mat_ids = self.multiplier_mat_ids
         else:
             multiplier_mat_ids = set()
@@ -761,28 +1114,28 @@ class McnpNeutronics(Neutronics):
             # The tallies array contains lines for each new pseudo-mat
             # but also one for the flux tally, so take that off
             num_mat_for_rxn_tallies = len(tallies) - 1
-            if user_tallies:
+            if include_user_tallies:
                 # Then we also should take this off.
                 num_mat_for_rxn_tallies -= len(self.base_input["tally"])
 
             if len(mat_cards) + num_mat_for_rxn_tallies > MATL_MAX_ID:
                 msg = "The number of materials in the model and the " + \
-                    "maximum number of pseudo-materials for reaction rate " + \
-                    "tallies exceeds the MCNP Material Limit of " + \
-                    "{};\n\t".format(MATL_MAX_ID) + \
-                    "Either reduce materials or set the " + \
-                    "`use_depletion_library_xs` to True in the input."
+                      "maximum number of pseudo-materials for reaction rate " + \
+                      "tallies exceeds the MCNP Material Limit of " + \
+                      "{};\n\t".format(MATL_MAX_ID) + \
+                      "Either reduce materials or set the " + \
+                      "`use_depletion_library_xs` to True in the input."
                 self.log("error", msg)
 
             # Also, now that we know the number of tallies, we can identify
             # possible tally ID collisions
-            if user_tallies:
+            if user_tallies_adder_i:
                 min_rr_t_id = min(self._rxn_rate_tally_map.keys()) + 10
                 if self.max_user_tally_id >= min_rr_t_id:
                     msg = "The user's tally IDs in the model conflict with the " + \
-                        "IDs used for reaction rate tallies. Please modify user " + \
-                        "tallies so the tally ID is less than " + \
-                        "{}".format(min_rr_t_id)
+                          "IDs used for reaction rate tallies. Please modify user " + \
+                          "tallies so the tally ID is less than " + \
+                          "{}".format(min_rr_t_id)
                     self.log("error", msg)
 
         # Now we can write the input
@@ -968,7 +1321,7 @@ class McnpNeutronics(Neutronics):
                 # Then this list is not empty, and thus there are rxn rates
                 self.log("info_file", "Obtaining Rxn Rates from MCTAL", 10)
                 output_methods._get_material_wise_rxn_rates(mctal, model_cells,
-                    flux, self._rxn_rate_tally_map, depl_libs)
+                                                            flux, self._rxn_rate_tally_map, depl_libs)
         # Clear the storage used by _rxn_rate_tally_map as it may be large and
         # we dont need that info anymore
         self._rxn_rate_tally_map = None
@@ -982,9 +1335,44 @@ class McnpNeutronics(Neutronics):
                     mat_id = cell.material_id
                     volumes[mat_id] = volumes_by_cell[cell.id]
 
+        # Get user tallies results
+        # Get tally ids list
+        if "user_tallies" in self.__dir__():
+            user_tallies_ids = self.user_tallies.keys()
+            user_tally_res = output_methods._get_user_tally_res(mctal, user_tallies_ids)
+            # update user tally res with tally inp. information
+            model_materials = self.universes[ROOT_UNIV].nested_materials
+            for tally_id in user_tally_res.keys():
+                facet_ids, material_names, universe_names = [], [], []
+                facet_type = self.user_tallies[tally_id].entity_type_f_card
+                if facet_type in ("cell", "surface"):
+                    for facet_id in user_tally_res[tally_id]["facet_ids"]:
+                        facet_ids.append(int(facet_id))
+                        if facet_type == "cell" and int(facet_id) != 0:
+                            cell = model_cells[int(facet_id)]
+                            #get mat and univ ids to get names
+                            mat_id, univ_id = cell.material_id, cell.universe_id
+                            material_names.append(model_materials[mat_id].name)
+                            universe_names.append(self.universes[univ_id].name)
+                        elif facet_type == "cell" and int(facet_id) == 0:
+                            mat_id, univ_id = 0, 0
+                            material_names.append("0")
+                            universe_names.append("0")
+                # update user_tally_res
+                user_tally_res[tally_id]["facet_ids"] = facet_ids
+                user_tally_res[tally_id]["material_names"] = material_names
+                user_tally_res[tally_id]["universe_names"] = universe_names
+
+
+
+
+
+        else:
+            user_tally_res = {}
+
         self.log("info_file", "Completed MCNP Post-Processing", 10)
 
-        return keff, keff_stddev, flux, nu, volumes
+        return keff, keff_stddev, flux, nu, volumes, user_tally_res
 
     def calc_volumes(self, materials, vol_data, target_unc, max_hist,
                      only_depleting):
@@ -1043,7 +1431,7 @@ class McnpNeutronics(Neutronics):
                                  vol_data["lower_left"])
             V_tot = deltas[0] * deltas[1] * deltas[2]
         elif vol_data["type"] == "cylinder":
-            V_tot = np.pi * vol_data["height"] * vol_data["radius"]**2
+            V_tot = np.pi * vol_data["height"] * vol_data["radius"] ** 2
 
         # Get the current version of the input
         if len(self.inputs) == 0:
@@ -1195,7 +1583,7 @@ class McnpNeutronics(Neutronics):
         shuffle_type : str
             The type of shuffle to perform; this depends on the actual
             neutronics solver type; this could be "material" or
-            "universe", for example.
+            "universe", example.
         materials : List of Material
             The materials to work with
         depl_libs : OrderedDict of DepletionLibrary
@@ -1258,6 +1646,11 @@ class McnpNeutronics(Neutronics):
         # (and also update our quick access dictionaries with it)
         if mat_by_name[mat_name].status == SUPPLY:
             orig_mat = mat_by_name[mat_name]
+            if not orig_mat.density or orig_mat.density == 0.0:
+                # Error: supply element without a density value assigned
+                msg = f"Supply material {orig_mat.name} was not assigned a " \
+                       "density in the ADDER input file"
+                self.log("error", msg)
             start_mat = orig_mat.clone(depl_libs)
             msg = "Material {} cloned as material {}".format(orig_mat.name,
                                                              start_mat.name)
@@ -1273,7 +1666,7 @@ class McnpNeutronics(Neutronics):
         for to_mat in to_mats:
             if mat_by_name[to_mat].status == SUPPLY:
                 msg = "Supply Materials can only be the first entry of a " \
-                    "shuffle (see Material {})".format(to_mat)
+                      "shuffle (see Material {})".format(to_mat)
                 self.log("error", msg)
 
         # mat_set now contains the names of the materials in this set
@@ -1312,7 +1705,7 @@ class McnpNeutronics(Neutronics):
             self.log("warning", msg)
         elif not np.allclose(volumes[0], volumes[1:], rtol=VOLUME_PRECISION):
             msg = "Material volumes within this shuffle set are not " + \
-                "within {}% of each other!".format(VOLUME_PRECISION * 100.)
+                  "within {}% of each other!".format(VOLUME_PRECISION * 100.)
             self.log("warning", msg)
 
         # Now we can step through and perform the actual move
@@ -1364,7 +1757,7 @@ class McnpNeutronics(Neutronics):
         for univ in univs_set:
             if univ not in self.universes:
                 msg = "Universe {} does not exist".format(univ) + \
-                    " and thus cannot be shuffled!"
+                      " and thus cannot be shuffled!"
                 self.log("error", msg)
 
             if univ == ROOT_UNIV:
@@ -1375,7 +1768,7 @@ class McnpNeutronics(Neutronics):
         start_univ = self.universes[univ_id]
         if start_univ.status == SUPPLY:
             start_univ = self.clone_universe(univ_id, depl_libs,
-                materials, new_status=IN_CORE)
+                                             materials, new_status=IN_CORE)
 
         start_id = start_univ.id
 
@@ -1386,7 +1779,7 @@ class McnpNeutronics(Neutronics):
         for t, to_univ in enumerate(to_univs):
             if self.universes[to_univ].status == SUPPLY:
                 msg = "Supply Universes can only be the first entry of a " \
-                    "shuffle (see Universe {})".format(to_univ_names[t])
+                      "shuffle (see Universe {})".format(to_univ_names[t])
                 self.log("error", msg)
 
         # Find the cells which own these universes (i.e., one level up)
@@ -1404,7 +1797,7 @@ class McnpNeutronics(Neutronics):
             # this universe as that would be non-mass-conserving.
             if len(cell_ids) > 1:
                 msg = "Cannot move a universe which is present in " \
-                    "multiple cells!"
+                      "multiple cells!"
                 self.log("error", msg)
             elif len(cell_ids) == 0:
                 univ_cells.append(None)
@@ -1439,16 +1832,50 @@ class McnpNeutronics(Neutronics):
             if cell_id is not None:
                 target_cell = self.cells[cell_id]
                 if target_cell.fill_type == "single":
+                    outbound_universe = target_cell.fill[0][0][0]
                     target_cell.fill[0][0][0] = self.universes[univ_set[i]]
                 elif target_cell.fill_type == "array":
+                    outbound_universe = target_cell.fill\
+                        [locs[j][0]][locs[j][1]][locs[j][2]]
                     target_cell.fill[locs[j][0]][locs[j][1]][locs[j][2]] = \
                         self.universes[univ_set[i]]
+                # This universe is in-core and needs to be set as such
+                self.universes[univ_set[i]].status = IN_CORE
+
+                # Check if the universe in the target cell was transformed,
+                # if it was, it is necessary to reset the fill_transforms
+                origin_universe = self.universes[univ_set[i]]
+                ask_for_new_tr = False
+                if outbound_universe.transform:  
+                    target_cell.revert_fill_transforms(locs[j])
+                    if target_cell.initial_fill_transforms\
+                            [locs[j][0]][locs[j][1]][locs[j][2]]:
+                        # If the initial fill transform exists (i.e., is not 
+                        # None), then I need a new transform ID
+                        ask_for_new_tr = True
+
+                if origin_universe.transform:
+                    # Re-applies the transformations of the origin universe
+                    # to this new location
+                    displacement = origin_universe.transform.displacement
+                    matrix = origin_universe.transform.rotation_matrix
+                    self._transform_universes([origin_universe.name],
+                                               None, None,
+                                               matrix, displacement, False)
+                elif ask_for_new_tr:
+                    # Necessary to get a unique ID out of the transform 
+                    # if it was reverted to its initial values but no transform
+                    # was applied
+                    self._transform_universes([origin_universe.name],
+                                               None, None,
+                                               None, None, False)
+                    
             else:
                 # Then this is going to storage
                 self.universes[univ_set[i]].status = STORAGE
 
     def clone_universe(self, u_id, depl_libs, model_mats, new_name=None,
-        new_status=None):
+                       new_status=None):
         """Create a copy of this Universe with a new unique ID and new
         IDs for all constituents, who are also cloned.
 
@@ -1493,7 +1920,8 @@ class McnpNeutronics(Neutronics):
             if num_cells_after_clone > num_cells_before_clone:
                 msg = "There are more cells in universe {} than the universe " \
                       "it was cloned from due to a lattice structure being " \
-                      "split up. The volumes for cells in universe {} should " \
+                      "split up. The volumes for cells in universe {} " \
+                      "and any user tallies should " \
                       "be checked.".format(clone.id, clone.id)
                 self.log("warning", msg)
 
@@ -1508,9 +1936,10 @@ class McnpNeutronics(Neutronics):
         return clone
 
     def geom_search(self, transform_type, axis, names, angle_units, k_target,
-                    bracket_interval, target_interval, uncertainty_fraction,
+                    bracket_interval, reference_position, target_interval,
+                    uncertainty_fraction,
                     initial_guess, min_active_batches, max_iterations,
-                    materials, case_idx, operation_idx, depl_libs):
+                    materials, case_idx, operation_idx, depl_libs, user_tallies_adder_i):
         """Performs a search of geometric transformations to identify that
         which yields the target k-eigenvalue within the specified interval.
 
@@ -1531,14 +1960,20 @@ class McnpNeutronics(Neutronics):
             The target k-eigenvalue to search for
         bracket_interval : Iterable of float
             The lower and upper end of the ranges to search.
+        reference_position: str or float
+            The reference point for the bracket_interval values.
+            'initial' denotes the initial position of the
+            control group in the neutronics input; whereas
+            'last' referes to the last known position of the
+            control group. If float, the value is the reference.
         target_interval : float
             The range around the k_target for which is considered success
         uncertainty_fraction : float
             This parameter sets the stochastic uncertainty to target when the
             initial computation of an iteration reveals that a viable solution
             may exist.
-        initial_guess : float
-            The starting point to search
+        initial_guess : float or str
+            The starting point to search. If "last", use last position
         min_active_batches : int
             The starting number of batches to run to ensure enough keff samples
             so that it follows the law of large numbers. This is the number of
@@ -1555,6 +1990,8 @@ class McnpNeutronics(Neutronics):
             The operation index, for printing
         depl_libs : OrderedDict of DepletionLibrary
             The depletion libraries in use in the model
+        user_tallies_adder_i : dict
+            User tallies in the ADDER input
 
         Returns
         -------
@@ -1582,7 +2019,7 @@ class McnpNeutronics(Neutronics):
             matrix = None
             this.transform(names, yaw, pitch, roll, angle_units, matrix,
                            displacement, transform_type,
-                           transform_in_place=False)
+                           transform_in_place=False, reset=False)
 
             # Swap out the sim settings data for the minimum case
             orig_sim_settings = this.sim_settings
@@ -1599,13 +2036,14 @@ class McnpNeutronics(Neutronics):
                 update_iso_status = True
             else:
                 update_iso_status = False
+            include_user_tallies = False
             this.write_input(inp_name, step_label, materials, depl_libs,
-                store_input, deplete_tallies, user_tallies, user_output,
-                update_iso_status)
+                             store_input, deplete_tallies, user_tallies_adder_i,
+                             include_user_tallies, user_output,update_iso_status)
             this._exec_solver(inp_name, fname, keep_runtpe=True)
-            keff, keff_stddev, _, _, _ = \
+            keff, keff_stddev, _, _, _, _ = \
                 this._read_results(fname, materials, depl_libs,
-                    deplete_tallies)
+                                   deplete_tallies)
 
             # Cleanup the files
             for out_type in MCNP_OUT_SUFFIX:
@@ -1639,10 +2077,15 @@ class McnpNeutronics(Neutronics):
                 new_active_batches = \
                     (min_sim_settings.batches - min_sim_settings.inactive) * \
                     (CI_95 * keff_stddev /
-                     (target_interval * uncertainty_fraction))**2
+                     (target_interval * uncertainty_fraction)) ** 2
+
+                # If statement to check number of active batches.
+                # Minimum fixed at 4, where MCNP starts to plot col/abs/tr-len keff
+                if new_active_batches < VALID_GEOM_SEARCH_MIN_ACTIVE_BATCHES:
+                    new_active_batches = VALID_GEOM_SEARCH_MIN_ACTIVE_BATCHES
 
                 new_batches = this.sim_settings.inactive + \
-                    round(new_active_batches)
+                              round(new_active_batches)
 
                 # Now re-run with this batch estimate
                 this.sim_settings.batches = new_batches
@@ -1651,9 +2094,9 @@ class McnpNeutronics(Neutronics):
                 this._exec_solver(inp_name, fname, is_continue=True)
                 os.remove(fname + "_runtpe")
 
-                keff, keff_stddev, _, _, _ = \
+                keff, keff_stddev, _, _, _, _ = \
                     this._read_results(fname, materials, depl_libs,
-                        deplete_tallies)
+                                       deplete_tallies)
 
                 # Cleanup all the files
                 for out_type in MCNP_OUT_SUFFIX:
@@ -1675,13 +2118,12 @@ class McnpNeutronics(Neutronics):
             yaw, pitch, roll, displacement = get_transform_args(-val, axis)
             this.transform(names, yaw, pitch, roll, angle_units, matrix,
                            displacement, transform_type,
-                           transform_in_place=False)
+                           transform_in_place=False, reset=False)
 
             return keff, keff_stddev
 
         # Save constants used for each case
         store_input = False
-        user_tallies = True
         user_output = True
         deplete_tallies = False
         iterations = 0
@@ -1690,7 +2132,7 @@ class McnpNeutronics(Neutronics):
         # of histories
         min_sim_settings = copy.deepcopy(self.sim_settings)
         min_sim_settings.batches = min_active_batches + \
-            min_sim_settings.inactive
+                                   min_sim_settings.inactive
 
         # First we need to evaluate the lower bracket point
         val_old = bracket_interval[0]
@@ -1757,7 +2199,8 @@ class McnpNeutronics(Neutronics):
         return converged, iterations, val_new, keff_new, keff_std_new
 
     def transform(self, names, yaw, pitch, roll, angle_units, matrix,
-                  displacement, transform_type, transform_in_place=False):
+                  displacement, transform_type, transform_in_place=False,
+                  matrix_notation="mcnp", reset=False):
         """Transforms the universe named `name` according to the angles in
         yaw, pitch, and roll and the translation in displacement.
 
@@ -1788,11 +2231,20 @@ class McnpNeutronics(Neutronics):
         transform_in_place : bool, optional
             If the existing transform should be updated (True) or a new
             transform created. Defaults to False.
+        matrix_notation : {"common", "mcnp"}
+            The notation used to define the rotation matrix. The matrix with
+            the MCNP notation corresponds to the transpose of the matrix defined
+            w/ the common mathematical notation ("common") to perform geometrical 
+            rotation. Default to common.
+        reset : bool
+            If True, the position of the entity is reset to the initial one 
+            provided in the MCNP base input file.
         """
 
         # Use the base class' type checking
         super().transform(names, yaw, pitch, roll, angle_units, matrix,
-                          displacement, transform_type, transform_in_place)
+                          displacement, transform_type, transform_in_place,
+                          matrix_notation=matrix_notation, reset=reset)
 
         # Now check the transform_type value
         check_value("transform_type", transform_type,
@@ -1806,26 +2258,59 @@ class McnpNeutronics(Neutronics):
             ypr = None
 
         if transform_type == "universe":
+            self._update_universe_transform(names, ypr, angle_units, matrix,
+                                            displacement, reset=reset)
             self._transform_universes(names, ypr, angle_units, matrix,
-                                      displacement, transform_in_place)
+                                      displacement, transform_in_place,
+                                      matrix_notation=matrix_notation,
+                                      reset=reset)
         elif transform_type == "cell":
             self._transform_cells(names, ypr, angle_units, matrix,
-                                  displacement, transform_in_place)
+                                  displacement, transform_in_place,
+                                  matrix_notation=matrix_notation,
+                                  reset=reset)
         elif transform_type == "surface":
             self._transform_surfaces(names, ypr, angle_units, matrix,
-                                     displacement, transform_in_place)
+                                     displacement, transform_in_place,
+                                     matrix_notation=matrix_notation,
+                                     reset=reset)
 
         # Now we have to merge and clean all of our transforms so the IDs
         # in the model does not grow with each transform operation
         CoordTransform.merge_and_clean(self.coord_transforms,
                                        self.cells, self.surfaces)
 
+    def _update_universe_transform(self, names, ypr, angle_units, matrix,
+                                   displacement, reset=False):
+        """ Update the universe-specific transform (CoordTransform) when the
+        transform operation is performed on an universe.
+
+        The universes are the ones in 'names' according to the angles in yaw,
+        pitch, and roll (or the provided matrix) and the translation in
+        displacement.
+        """
+
+        # Create the transform to give universes
+        transform = CoordTransform(0, displacement, ypr, matrix,
+                                   in_degrees=angle_units == "degrees")
+
+        # Get the universes from names
+        universes = [self.universe_by_name(n) for n in names]
+        for universe in universes:
+            # This is always in_place, we don't need to
+            # allocate new tr_ids. Then transform universe
+            tfu = universe.transform
+            if tfu and not reset:
+                universe.transform = tfu.combine(transform, in_place=True)
+            else:
+                universe.transform = transform
 
     def _transform_universes(self, names, ypr, angle_units, matrix,
-                             displacement, transform_in_place):
+                             displacement, transform_in_place,
+                             matrix_notation="mcnp", reset=False):
         """Transforms the universe named `name` according to the angles in
-        yaw, pitch, and roll (or the provided matrix) and the translation in
-        displacement.
+        yaw, pitch, and roll (or the provided matrix and notation) and the 
+        translation in displacement.
 
         Note that this will operate on all instances of the universe,
         even if that is not desired.
@@ -1833,7 +2318,8 @@ class McnpNeutronics(Neutronics):
 
         # Create the transform to potentially be used by all
         transform = CoordTransform(None, displacement, ypr, matrix,
-                                   in_degrees=angle_units == "degrees")
+                                   in_degrees=angle_units == "degrees",
+                                   matrix_notation=matrix_notation)
         used_transform = False
 
         # Convert the universe names to the identifiers
@@ -1844,6 +2330,19 @@ class McnpNeutronics(Neutronics):
         for u_id in univ_ids:
             if u_id == ROOT_UNIV:
                 msg = "Cannot transform root universe"
+                self.log("error", msg)
+
+            # Do not allow transforms of storage and supply universes before
+            # they are moved to in-core
+            u_trans = self.universes[u_id]
+            if u_trans.status == SUPPLY:
+                msg =   "Supply Universes can not be transformed. "
+                msg += f"Use an in-core instance instead "
+                msg += f"(e.g., {u_trans.name}[42])."
+                self.log("error", msg)
+            elif u_trans.status == STORAGE:
+                msg =   "Storage Universes can not be transformed. "
+                msg += f"Move universe {u_trans.name} to in-core first. "
                 self.log("error", msg)
 
             # Find the cells which own this universe (i.e., one level up)
@@ -1863,6 +2362,10 @@ class McnpNeutronics(Neutronics):
                         for n_idx in range(len(index[0])):
                             idx = (index[0][n_idx], index[1][n_idx],
                                    index[2][n_idx])
+                            # Reset transform if reset is True
+                            if reset:
+                                cell.revert_fill_transforms(idx)
+                                transform_in_place = False
                             # See if there is a transform here already
                             tf = cell.fill_transforms[idx[0]][idx[1]][idx[2]]
                             if tf is not None:
@@ -1884,10 +2387,10 @@ class McnpNeutronics(Neutronics):
             self.coord_transforms[transform.id] = transform
 
     def _transform_cells(self, names, ypr, angle_units, matrix, displacement,
-                         transform_in_place):
+                         transform_in_place, matrix_notation, reset=False):
         """Transforms the cells named `name` according to the angles in
-        yaw, pitch, and roll (or the provided matrix) and the translation in
-        displacement.
+        yaw, pitch, and roll (or the provided matrix and notation) and the 
+        translation in displacement.
         """
 
         # Convert names to ids
@@ -1896,10 +2399,16 @@ class McnpNeutronics(Neutronics):
 
         # Create the transform to potentially be used by all
         transform = CoordTransform(None, displacement, ypr, matrix,
-                                   in_degrees=angle_units == "degrees")
+                                   in_degrees=angle_units == "degrees",
+                                   matrix_notation=matrix_notation)
         used_transform = False
         for c_id in ids:
             cell = self.cells[c_id]
+
+            # Reset transform if reset is True
+            if reset:
+                cell.coord_transform = cell.initial_coord_transform
+                transform_in_place = False
 
             # See if there is a transform already here
             tf = cell.coord_transform
@@ -1924,10 +2433,11 @@ class McnpNeutronics(Neutronics):
             self.coord_transforms[transform.id] = transform
 
     def _transform_surfaces(self, names, ypr, angle_units, matrix,
-                            displacement, transform_in_place):
+                            displacement, transform_in_place,
+                            matrix_notation, reset=False):
         """Transforms the surfaces named `name` according to the angles in
-        yaw, pitch, and roll (or the provided matrix) and the translation in
-        displacement.
+        yaw, pitch, and roll (or the provided matrix and notation) and the 
+        translation in displacement.
         """
 
         # Convert names to ids
@@ -1936,10 +2446,16 @@ class McnpNeutronics(Neutronics):
 
         # Create the transform to potentially be used by all
         transform = CoordTransform(None, displacement, ypr, matrix,
-                                   in_degrees=angle_units == "degrees")
+                                   in_degrees=angle_units == "degrees",
+                                   matrix_notation=matrix_notation)
         used_transform = False
         for surf_id in ids:
             surf = self.surfaces[surf_id]
+
+            # Reset transform if reset flag is True
+            if reset:
+                surf.coord_transform = surf.initial_coord_transform
+                transform_in_place = False
 
             # See if there is a transform already here
             tf = surf.coord_transform
@@ -1965,7 +2481,6 @@ class McnpNeutronics(Neutronics):
 
 def _run_volume(messages, title, this, mat_cards, output, others,
                 seed, first_pass, cells_to_obtain):
-
     other_cards = others + ["rand gen=2 seed={}".format(seed)]
 
     # Get the list of files that exist before we execute

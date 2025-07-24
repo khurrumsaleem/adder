@@ -106,8 +106,8 @@ def split_data_and_keywords(input_params, allowed_keywords):
         if len(splits) == 1:
             # Then we had no equal, we split on space(s)
             splits = key_values.split(maxsplit=1)
-        key = splits[0]
-        value = splits[1]
+        key = splits[0].strip()
+        value = splits[1].strip()
         keywords[key] = value
     return data, keywords
 
@@ -202,7 +202,7 @@ def expand_jumps(values):
         # We either have #j or j
         if len(value) > 1:
             # Then we *may* have #j
-            if value[:-1].isdigit() and value[-1] == "j":
+            if value[:-1].isdigit() and value[-1] in ["j", "J"]:
                 # This is a #j!
                 num_jumps = num_format(value[:-1], 'int')
                 for j in range(num_jumps):
@@ -323,17 +323,35 @@ def combine_lines(block):
     i = 0
     while i < len(reduced_block):
         this_line = reduced_block[i]
+
         if this_line.rstrip().endswith(CONTINUATION):
-            # Then this line is a continuation, so we want to store
-            # this line and the next line as one
-            if i == len(reduced_block) - 1:
-                # Then there is no next line so raise this as an error
-                raise ValueError("Line continuation detected at the "
-                                 "end of a block!")
-            reduced_block_again.append(" ".join(
-                [this_line[:this_line.index(CONTINUATION)],
-                 reduced_block[i + 1].lstrip()]))
-            i += 2
+            line_continuation = True
+            reduced_line = this_line[:this_line.index(CONTINUATION)]
+
+            # Continue to read and process lines until one without a
+            # continuation character is found
+            while line_continuation:
+
+                if i == len(reduced_block) - 1:
+                    # Then there is no next line so raise this as an error
+                    raise ValueError("Line continuation detected at the "
+                                     "end of a block!")
+
+                i += 1
+                this_line = reduced_block[i]
+
+                if this_line.rstrip().endswith(CONTINUATION):
+                    reduced_line += (" " +
+                                     this_line[:this_line.index(CONTINUATION)])
+                    line_continuation = True
+                else:
+                    reduced_line += " " + this_line
+                    line_continuation = False
+
+            # Store the processed line
+            reduced_block_again.append(reduced_line)
+            i += 1
+
         else:
             # just store this line
             reduced_block_again.append(this_line.lstrip())

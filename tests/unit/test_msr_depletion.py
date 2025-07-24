@@ -12,6 +12,7 @@ def test_set_msr_params(depletion_lib):
     method = "brute"
     lib = depletion_lib
     num_dens = 1. / (235.043928190 * 1.e24) * AVOGADRO
+    ISO_REGISTRY.clear()
     mat1 = Material("mat1", 1, 1. * num_dens, [["U235", "70c"]],
                     [1.], True, "71c", 1, [], IN_CORE)
     mat2 = Material("mat2", 2, 2. * num_dens, [["U235", "70c"]],
@@ -76,7 +77,7 @@ def test_set_msr_params(depletion_lib):
     num_threads = 1
     num_procs = 2
     cram_order = 16
-    chunksize = 3
+    chunksize = 0
     test_d = MSRDepletion(exec_cmd, num_threads, num_procs, chunksize,
         cram_order)
     assert test_d.exec_cmd == exec_cmd
@@ -124,6 +125,7 @@ def test_execute(depletion_lib):
     lib = depletion_lib
     depl_libs = {0: lib}
     num_dens = 1. / (235.043928190 * 1.e24) * AVOGADRO
+    ISO_REGISTRY.clear()
     mat1 = Material("mat1", 1, 1. * num_dens, [["U235", "70c"]],
                     [1.], True, "71c", 1, [], IN_CORE)
     mat2 = Material("mat2", 2, 2. * num_dens, [["U235", "70c"]],
@@ -193,6 +195,7 @@ def test_execute(depletion_lib):
         cram_order)
 
     test_d.set_msr_params("average", method, [sys_data], materials, depl_libs)
+    ISO_REGISTRY.register_depletion_lib_isos(depl_libs, [mat1, mat2, mat3])
 
     # Lets check the flux setting
     mat1.flux = np.array([1.])
@@ -228,14 +231,14 @@ def test_execute(depletion_lib):
     test_d.systems[0]._concentration_history = None
 
     # reset mat1's concentrations to match what we expect for the ref
-    mat1.isotopes = [Isotope("U235", "70c")]
+    mat1.isotopes = [("U235", "70c", True)]
     mat1.atom_fractions = [1.]
     mat1.density = 1.E-4
 
     test_d.execute(materials, depl_libs, 337.5 / 86400., 0, 1, 0.)
 
     # Solution same as in test_msr_system
-    calc_isos = [iso.name for iso in mat1.isotopes]
+    calc_isos = [mat1.isotope_obj(i).name for i in range(mat1.num_isotopes)]
     assert calc_isos == ["H1", "U235"]
     np.testing.assert_allclose(mat1.number_densities,
                                [5.28e14, 1.0e+20], rtol=1.8E-7)

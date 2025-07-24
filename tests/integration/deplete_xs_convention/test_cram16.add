@@ -1,0 +1,37 @@
+case_name = Simple Li6 depletion
+neutronics_solver = "MCNP"
+neutronics_exec = mcnp.EXE
+num_neutronics_threads = 2
+num_depletion_threads = 4
+neutronics_input_file = mcnp.inp
+neutronics_library_file = ./xsdir
+depletion_solver = cram16
+depletion_library_file = test.h5
+depletion_library_name = test
+output_hdf5 = results.h5
+use_depletion_library_xs = False
+
+[materials]
+    [[metadata]]
+        [[[item_1]]]
+            neutronics_id = 1
+            name = fuel
+            depleting = True
+        [[[item_2]]]
+            neutronics_id = 2
+            name = Li6
+            depleting = True
+
+[operations]
+    [[state 1]]
+        label = "Cycle 1"
+        [[[write_depletion_lib_0]]]
+            filename = "state0_lib.h5"
+            materials = Li6
+        [[[deplete_1]]]
+            powers = 100.
+            durations = 50.
+            depletion_method = predictor
+        [[[write_depletion_lib_1]]]
+            filename = "state1_lib.h5"
+            materials = Li6

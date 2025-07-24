@@ -34,18 +34,22 @@ def test_single_decay():
     def deplete_substeps(num_substeps, lib):
         num_threads = 1
         num_procs = 1
-        chunksize = 1
+        chunksize = 0
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, chunksize)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1.,
                              [("Xe135", "70c", True)], [1.], True,
                              "70c", 3, [], adder.constants.IN_CORE,
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = 1.E13 * np.ones(3)
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -128,15 +132,19 @@ def test_branch_decay():
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, chunksize)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material, density chosen to start with
         # a number density of 1
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1.,
                              [("Xe135_m1", "70c", True)], [1.], True,
                              "70c", 3, [], adder.constants.IN_CORE,
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = 1.E13 * np.ones(3)
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -200,8 +208,10 @@ def test_fission_yield_decay():
         test_d.isotope_types = {"actinide": set(["U235", "S250"]),
                                 "fp": set(["Xe135"]),
                                 "activation": set()}
+        test_d.compute_decay(lib)
 
         # Build the starting material
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1.,
                              [("Xe135", "70c", True), ("U235", "70c", True)],
                              [0.5, 0.5], True,
@@ -209,6 +219,8 @@ def test_fission_yield_decay():
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([1.E19])
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -238,7 +250,7 @@ def test_fission_yield_xs():
     # consisting of U235 and Xe135
     depllib = adder.DepletionLibrary("test", np.array([0., 0.01, 1., 20.]))
 
-    u235xs = adder.ReactionData("b", 3)
+    u235xs = adder.ReactionData()
     u235xs.add_type("fission", "b", 0.1 * np.ones(3))
     u235nfy = adder.YieldData()
     u235nfy.add_isotope("Xe135", 2.)
@@ -262,8 +274,10 @@ def test_fission_yield_xs():
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, chunksize)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1.,
                              [("Xe135", "70c", True), ("U235", "70c", True)],
                              [0.5, 0.5], True,
@@ -271,6 +285,8 @@ def test_fission_yield_xs():
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([1.83423, 6.54654, 5.69335]) * 1.E19
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -300,7 +316,7 @@ def test_multi_fission_yield():
                              .8, .9])
     yields = np.array(yields)
     for i in range(len(fissile)):
-        xs = adder.ReactionData("b", 3)
+        xs = adder.ReactionData()
         xs.add_type("fission", "cm2", xss[i] * np.ones(3))
         nfy = adder.YieldData()
         nfy.add_isotope("Xe135", yields[i])
@@ -338,15 +354,18 @@ def test_multi_fission_yield():
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, chunksize)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material, density chosen to start with
         # a number density of 1
-
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1., isos, np.ones(len(isos)),
                              True, "70c", 3, [], adder.constants.IN_CORE,
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([1.83423, 6.54654, 5.69335]) * 1.E18
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -374,7 +393,7 @@ def test_burn_actinide():
     yields = [[0.5, 0.5], [0.5, 0.5], [1.]]
     types = ["(n,gamma)", "(n,2n)", "(n,3n)"]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     stable_decay = adder.DecayData(None, "s", 0.)
     for i in range(len(targets)):
         if len(targets[i]) > 1:
@@ -414,6 +433,7 @@ def test_burn_actinide():
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, 1)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material, density chosen to start with
         # a number density of 1
@@ -427,12 +447,14 @@ def test_burn_actinide():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1., isos, num_frac, True,
                              "70c", 3, [], adder.constants.IN_CORE,
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
-
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -461,7 +483,7 @@ def test_burn_notactinide():
     targets = [["Xe136"], ["Xe134"], ["Te132"], ["I135"]]
     types = ["(n,gamma)", "(n,2n)", "(n,a)", "(n,p)"]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     stable_decay = adder.DecayData(None, "s", 0.)
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
@@ -500,6 +522,7 @@ def test_burn_notactinide():
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, 1)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material, density chosen to start with
         # a number density of 1
@@ -513,12 +536,14 @@ def test_burn_notactinide():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1., isos, num_frac, True,
                              "70c", 3, [], adder.constants.IN_CORE,
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
-
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 
@@ -546,7 +571,7 @@ def test_simple_burn_and_decay():
     targets = [["Xe136"], ["Xe134"], ["Te132"], ["I135"]]
     types = ["(n,gamma)", "(n,2n)", "(n,a)", "(n,p)"]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     stable_decay = adder.DecayData(None, "s", 0.)
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
@@ -590,6 +615,7 @@ def test_simple_burn_and_decay():
         # Initialize our depletion solver
         test_d = Origen22Depletion(EXEC_CMD, num_threads, num_procs, 1)
         test_d.isotope_types = Origen22Depletion.assign_isotope_types(lib)
+        test_d.compute_decay(lib)
 
         # Build the starting material, density chosen to start with
         # a number density of 1
@@ -603,12 +629,14 @@ def test_simple_burn_and_decay():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = adder.Material("test", 1, 1., isos, num_frac, True,
                              "70c", 3, [], adder.constants.IN_CORE,
                              check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
-
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
         # Set our decay times; will look at t = [0, 1, 2, 3, 4, 5] days
         delta_ts = np.ones(6)
 

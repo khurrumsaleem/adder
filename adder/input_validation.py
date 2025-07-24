@@ -4,6 +4,7 @@ import adder.constants as constants
 from adder.data import is_isotope
 from adder.type_checker import *
 from adder.loggedclass import LoggedClass
+
 logger = LoggedClass(0, __name__)
 
 
@@ -23,6 +24,8 @@ def validate(config):
     if "universes" in config:
         _validate_universes(config["universes"])
         # No else needed since this block is optional
+    if "tallies" in config:
+        _validate_tallies(config["tallies"])
     if "operations" in config:
         num_time_steps = _validate_ops(config["operations"], config,
                                        group_names)
@@ -32,7 +35,7 @@ def validate(config):
             _validate_msr(config["msr"], num_time_steps)
         else:
             msg = "The [msr] block was provided, however " + \
-                "the depletion solver is not `msr`, `msr16`, or 'msr48'"
+                  "the depletion solver is not `msr`, `msr16`, or 'msr48'"
             raise ValueError(msg)
 
 
@@ -82,6 +85,10 @@ def _validate_metadata(config):
     default = constants.DEFAULT_REACTIVITY_THRESH_TO_INITIAL
     check_optional(config, keys, str_to_bool, level, default)
 
+    keys = ["renormalize_power_density"]
+    default = constants.DEFAULT_RENORMALIZE_POWER_DENSITY
+    check_optional(config, keys, str_to_bool, level, default)
+
     # If they only give num_threads, then set that to be what num_neut_threads
     # and num_depl_threads are
     if "num_threads" in config:
@@ -96,10 +103,10 @@ def _validate_metadata(config):
         check_num_and_range(config, keys, int, level, 1, min_val=1)
     # Check the integers
     keys = ["num_mpi_processes", "depletion_chunksize", "depletion_substeps"]
-    defaults = [1, 1000, 10]
+    defaults = [1, 0, 10]
     req_type = int
-    min_val = 1
-    for key, default in zip(keys, defaults):
+    min_vals = [1, 0, 1]
+    for key, default, min_val in zip(keys, defaults, min_vals):
         check_num_and_range(config, [key], req_type, level, default,
                             min_val=min_val)
 
@@ -157,6 +164,51 @@ def _validate_universes(config):
     if "storage" in config:
         _validate_storage_and_supply(config["storage"],
                                      "[universes][[storage]]")
+
+
+def _validate_tallies(config):
+    level = "[tallies]"
+    for mat_ssec, subcfg in config.items():
+        sublevel = level + "[[[{}]]]".format(mat_ssec)
+        # Handle just range
+        if mat_ssec.startswith("range"):
+            # Check required integers
+            keys = ["tally_id_start", "tally_id_end"]
+            req_type = int
+            check_required(subcfg, keys, req_type, sublevel)
+            check_num_and_range(subcfg, keys, req_type, sublevel, None,
+                                min_val=1)
+
+            # Check the exclude_neutronics_ids list
+            keys = ["exclude_tally_ids"]
+            check_lists(subcfg, keys, int, sublevel, required=False,
+                        set_None=True, min_val=1)
+
+        elif mat_ssec.startswith("list"):
+            # Handle just list
+            # Check the neutronics_ids list
+            keys = ["tally_ids"]
+            check_lists(subcfg, keys, int, sublevel, required=True, min_val=1)
+
+        elif mat_ssec.startswith("item"):
+            # Handle just individual items
+            keys = ["tally_id"]
+            req_type = int
+            check_required(subcfg, keys, req_type, sublevel)
+            check_num_and_range(subcfg, keys, req_type, sublevel, None,
+                                min_val=1)
+
+        else:
+            msg = "Invalid {} subsection name: {}".format(level, sublevel)
+            raise ValueError(msg)
+
+        # check type for keys
+        keys=["type"]
+        req_vals = constants.VALID_TALLY_TYPES
+        default = constants.DEFAULT_TALLY_TYPE
+        req_type = str
+        check_required(subcfg, keys, req_type, sublevel)
+        check_in_set(subcfg, keys, req_vals, level, None)
 
 
 def _validate_matuni_metadata(config, top_level):
@@ -264,7 +316,6 @@ def _validate_aliases(config, top_level):
 
 
 def _validate_storage_and_supply(config, level):
-
     # We have either redefine, copy, or new subsections
     for my_ssec, subcfg in config.items():
         if my_ssec == "new":
@@ -380,7 +431,7 @@ def _validate_ops_deplete(config, top_config, level):
 
     # Either powers or fluxes must be provided
     if ("powers" in config and "fluxes" in config) or \
-        ("powers" not in config and "fluxes" not in config):
+            ("powers" not in config and "fluxes" not in config):
         msg = "One of 'powers' or 'fluxes'"
         raise ValueError(_reqd_errormsg(msg, level))
     if "powers" in config:
@@ -389,6 +440,8 @@ def _validate_ops_deplete(config, top_config, level):
     if "fluxes" in config:
         check_lists(config, ["fluxes"], float, level, min_num=1, required=True,
                     min_val=0.)
+    keys=["include_user_tallies"]
+    check_optional(config, keys, str_to_bool, level, True)
 
     # The next two are optional values that can overwrite the global
     # defaults from metadata, so get that metadata value for the default
@@ -409,6 +462,11 @@ def _validate_ops_deplete(config, top_config, level):
     # Check if the user wants the endpoint to be calculated or not
     keys = ["execute_endpoint"]
     check_optional(config, keys, str_to_bool, level, True)
+
+    # Check if power density should be renormalized
+    keys = ["renormalize_power_density"]
+    default = top_config[keys[0]]
+    check_optional(config, keys, str_to_bool, level, default)
 
     return len(config['durations'])
 
@@ -472,8 +530,7 @@ def _validate_ops_write_input(config, top_config, level):
     check_required(config, keys, str, level)
 
     # file writing information
-    keys = ["include_user_tallies", "include_user_output",
-            "include_adder_tallies"]
+    keys = ["include_user_tallies", "include_user_output", "include_adder_tallies"]
     check_optional(config, keys, str_to_bool, level, True)
 
 
@@ -508,16 +565,16 @@ def _validate_ops_calc_volume(config, top_config, level):
         for param in ["cylinder_bottom", "cylinder_radius", "cylinder_height"]:
             if param in config:
                 msg = "If `lower_left` and `upper_right` are specified," + \
-                    "{} cannot be specified as well".format(param)
+                      "{} cannot be specified as well".format(param)
                 raise ValueError(msg)
     elif "cylinder_bottom" in config and "cylinder_radius" in config and \
-        "cylinder_height" in config:
+            "cylinder_height" in config:
         vol_type = "cylinder"
         # Now ensure there is not any box inputs
         for param in ["lower_left", "upper_right"]:
             if param in config:
                 msg = "If `lower_left` or `upper_right` cannot be " + \
-                    "specified with cylinder parameters"
+                      "specified with cylinder parameters"
                 raise ValueError(msg)
 
     if vol_type == "box":
@@ -542,6 +599,8 @@ def _validate_ops_transform(config, top_config, level, group_names):
         # Then we just need to get the group
         check_in_set(config, ["group_name"], group_names, level, default=None)
         check_required(config, ["value"], float, level)
+        check_optional(config, ["reset"], str_to_bool, level,
+                       constants.DEFAULT_TRANSFORM_RESET)
     else:
         # Get the type
         keys = ["type"]
@@ -563,7 +622,7 @@ def _validate_ops_transform(config, top_config, level, group_names):
 
         # angle_units
         check_in_set(config, ["angle_units"], constants.VALID_ANGLE_TYPES, level,
-                    constants.DEFAULT_ANGLE_TYPE)
+                     constants.DEFAULT_ANGLE_TYPE)
 
         # Matrix
         keys = ["matrix"]
@@ -583,9 +642,21 @@ def _validate_ops_transform(config, top_config, level, group_names):
         if config[keys[0]] is None:
             config[keys[0]] = [0., 0., 0.]
 
+        # Matrix notation
+        keys = ["matrix_notation"]
+        check_optional(config, keys, str, level, default="mcnp")
+
+        # Reset flag
+        check_optional(config, ["reset"], str_to_bool, level,
+                       constants.DEFAULT_TRANSFORM_RESET)
+
 
 def _validate_ops_geom_sweep(config, top_config, level, group_names):
     check_in_set(config, ["group_name"], group_names, level, default=None)
+
+
+    keys=["include_user_tallies"]
+    check_optional(config, keys, str_to_bool, level, True)
 
     # And now we can check the range and list blocks
     values = []
@@ -644,12 +715,21 @@ def _validate_ops_geom_search(config, top_config, level, group_names):
     # The required list of floats
     check_lists(config, ["bracket_interval"], float, level, 2, 2, True)
     # Optional parameters
-    check_optional(config, ["initial_guess"], float, level,
+    check_optional(config, ["reference_position"], str, level,
+                   constants.DEFAULT_GEOM_SEARCH_REFERENCE_POSITION)
+    check_float_or_string(config, ["reference_position"],
+                          constants.VALID_GEOM_SEARCH_REFERENCE_POSITION,
+                          level, None)
+    check_optional(config, ["initial_guess"], str, level,
                    config["bracket_interval"][1])
-    check_greater_than("initial_guess", config["initial_guess"],
-                       config["bracket_interval"][0], equality=True)
-    check_less_than("initial_guess", config["initial_guess"],
-                    config["bracket_interval"][1], equality=True)
+    check_float_or_string(config, ["initial_guess"],
+                          constants.VALID_GEOM_SEARCH_INITIAL_GUESS,
+                          level, None)
+    if isinstance(config["initial_guess"], float):
+        check_greater_than("initial_guess", config["initial_guess"],
+                           config["bracket_interval"][0], equality=True)
+        check_less_than("initial_guess", config["initial_guess"],
+                        config["bracket_interval"][1], equality=True)
     check_optional(config, ["min_active_batches"], int, level,
                    constants.DEFAULT_GEOM_SEARCH_MIN_ACTIVE_BATCHES)
     check_greater_than("min_active_batches", config["min_active_batches"], 3)
@@ -700,8 +780,8 @@ def _validate_msr(config, num_time_steps):
                 # duration, power/fluxes and feed rate must be the same length
                 if len(sscfg["feed_rate"]) != num_time_steps and len(sscfg["feed_rate"]) > 1:
                     msg = "The total number of durations in the deplete " + \
-                        "operations must be equal to number of feed_rate " + \
-                        "values."
+                          "operations must be equal to number of feed_rate " + \
+                          "values."
                     logger.log("error", msg)
 
                 # feed_rate, feed_material, feed_mixture must be same length
@@ -710,12 +790,12 @@ def _validate_msr(config, num_time_steps):
                        for lst in [sscfg["feed_material"],
                                    sscfg["feed_mixture"], sscfg["density"]]):
                     msg = "feed_rate, feed_material, feed_mixture, and " + \
-                        "density must be lists of the same length"
+                          "density must be lists of the same length"
                     logger.log("error", msg)
 
                 if len(sscfg["feed_rate"]) == 1:
-                    msg = "Only 1 feed rate value provided, CONSTANT feed " +\
-                        "rate assumed. "
+                    msg = "Only 1 feed rate value provided, CONSTANT feed " + \
+                          "rate assumed. "
                     logger.log("info", msg)
 
                 # Do any unit conversion so we dont have to deal with it later
@@ -744,7 +824,7 @@ def _validate_msr(config, num_time_steps):
                         continue
                     elif not subsubkey.lower().startswith("material"):
                         msg = "Only [[[material_#]]] blocks " + \
-                            "are allowed in a [msr][[system]][[[feed]]] block!"
+                              "are allowed in a [msr][[system]][[[feed]]] block!"
                         logger.log("error", msg)
 
                     ssscfg = sscfg[subsubkey]
@@ -762,13 +842,12 @@ def _validate_msr(config, num_time_steps):
                     check_with_function(ssscfg, ["names"], is_isotope,
                                         ssslevel)
 
-                    # make list of material names
                     if 'material_names' in locals():
-                        material_names.append(subsubkey.strip('material_'))
+                        material_names.append(subsubkey[len("material_"):])
                     else:
-                        material_names = [subsubkey.strip('material_')]
+                        material_names = [subsubkey[len("material_"):]]
 
-                # Now use feed_material and feed_mixture to organize isotope
+                        # Now use feed_material and feed_mixture to organize isotope
                 # amount and rearrange so we have a dictionary relating names
                 # to the vector
                 if "feed_vector" not in sscfg:
@@ -821,7 +900,7 @@ def _validate_msr(config, num_time_steps):
                     continue
                 elif not subkey.lower().startswith("component"):
                     msg = "Only [[[feed]]] and [[[component_#]]] blocks " + \
-                        "are allowed in a [msr][[system]] block!"
+                          "are allowed in a [msr][[system]] block!"
                     logger.log("error", msg)
 
                 sscfg = subcfg[subkey]
@@ -894,6 +973,7 @@ def _validate_msr(config, num_time_steps):
             msg = "Input Block {} Will Be Ignored".format(sublevel)
             logger.log("error", msg)
 
+
 ########################################################################
 
 
@@ -952,6 +1032,17 @@ def check_in_set(cfg, keys, req_vals, level, default, cast_to=None):
             check_value(param, cfg[param], req_vals)
 
 
+def check_float_or_string(cfg, keys, req_vals, level, default, cast_to=None):
+    for param in keys:
+        if param not in cfg:
+            cfg[param] = default
+        else:
+            try:
+                cfg[param] = float(cfg[param])
+            except:
+                check_in_set(cfg, keys, req_vals, level, default)
+
+
 def check_num_and_range(cfg, keys, req_type, level, default,
                         min_val=None, max_val=None):
     # This must convert the type, check that it is in the range, and set
@@ -991,19 +1082,19 @@ def _reqd_errormsg(name, level):
 
 def _min_len_errormsg(name, level, min_num):
     msg = "{} at the {} level of the input file is ".format(name, level) + \
-        "less than the minimum length of {}".format(min_num)
+          "less than the minimum length of {}".format(min_num)
     return msg
 
 
 def _max_len_errormsg(name, level, max_num):
     msg = "{} at the {} level of the input file is ".format(name, level) + \
-        "less than the maximum length of {}".format(max_num)
+          "less than the maximum length of {}".format(max_num)
     return msg
 
 
 def _min_val_errormsg(name, level, min_num):
     msg = "{} at the {} level of the input file is ".format(name, level) + \
-        "less than the minimum value of {}".format(min_num)
+          "less than the minimum value of {}".format(min_num)
     return msg
 
 

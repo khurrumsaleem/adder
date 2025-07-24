@@ -64,12 +64,15 @@ def test_simple_feed_addition():
         # Build the starting material
         num_frac = [0.5, 0.5, 0.]
         initial_isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., initial_isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE,
                            check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Now initialize the msr data
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
@@ -174,12 +177,15 @@ def test_simple_feed_addition_w_tank():
         # Build the starting material
         num_frac = [0.5, 0.5, 0.]
         initial_isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., initial_isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE,
                            check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Now initialize the msr data
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
@@ -272,7 +278,7 @@ def test_stationary():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -317,11 +323,14 @@ def test_stationary():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
             depl_libs)
@@ -391,8 +400,7 @@ def test_flowing():
     # The base depletion library
     depllib = adder.DepletionLibrary("base", np.array([0., 0.01, 1., 20.]))
     xss = [0.1, 0.2, 0.3]
-    xs = adder.ReactionData("b", 3)
-    xs.add_type
+    xs = adder.ReactionData()
     xs.add_type("(n,gamma)", "b", xss, targets="Pu239")
     am239_dk = adder.DecayData(360. * 12., "s", 0.)  # 1.2 hr half life
     am239_dk.add_type("ec/beta+", 1., ["Pu239"])
@@ -434,6 +442,7 @@ def test_flowing():
         # Build the starting material, even mix of Pu238 and Am239
         isos = [("Pu238", "70c", True), ("Am239", "70c", True)]
         num_frac = [0.5, 0.5]
+        adder.isotope.ISO_REGISTRY.clear()
         mat1 = MockMaterial("test_1", 1, 1., isos, num_frac, True,
                             "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat1.is_default_depletion_library = True
@@ -445,9 +454,9 @@ def test_flowing():
                             "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat2_lib = depl_libs[0].clone(new_name="mat2")
         n_xs = mat2_lib.isotopes["Pu238"].neutron_xs
-        _, t, y, q = n_xs._products["(n,gamma)"]
+        _, ty, q = n_xs.get_product_data_by_type("(n,gamma)")
         xs_2 = np.array([0.2, 0.2, 0.1])
-        n_xs._products["(n,gamma)"] = (xs_2, t, y, q)
+        n_xs.update_type("(n,gamma)", xs_2, ty, q)
         mat2.is_default_depletion_library = False
         mat2.depl_lib_name = mat2_lib.name
         mat2.flux = np.ones(3) * 1.E19
@@ -456,6 +465,8 @@ def test_flowing():
 
         test_d.set_msr_params("histogram", solve_method, [sys_data],
                               [mat1, mat2], depl_libs)
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(depl_libs,
+                                                               [mat1, mat2])
 
         # Set up our solution space
         i238 = 0
@@ -516,8 +527,7 @@ def test_multipath():
     # The base depletion library
     depllib = adder.DepletionLibrary("base", np.array([0., 0.01, 1., 20.]))
     xss = [0.1, 0.2, 0.3]
-    xs = adder.ReactionData("b", 3)
-    xs.add_type
+    xs = adder.ReactionData()
     xs.add_type("(n,gamma)", "b", xss, targets="Pu239")
     am239_dk = adder.DecayData(360. * 12., "s", 0.)  # 1.2 hr half life
     am239_dk.add_type("ec/beta+", 1., ["Pu239"])
@@ -566,6 +576,7 @@ def test_multipath():
         # Build the starting material, even mix of Pu238 and Am239
         isos = [("Pu238", "70c", True), ("Am239", "70c", True)]
         num_frac = [0.5, 0.5]
+        adder.isotope.ISO_REGISTRY.clear()
         mat1 = MockMaterial("test_1", 1, 1., isos, num_frac, True,
                             "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat1.is_default_depletion_library = True
@@ -577,14 +588,17 @@ def test_multipath():
                             "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat2_lib = base_lib.clone(new_name="mat2")
         n_xs = mat2_lib.isotopes["Pu238"].neutron_xs
-        _, t, y, q = n_xs._products["(n,gamma)"]
+        _, ty, q = n_xs.get_product_data_by_type("(n,gamma)")
         xs_2 = np.array([0.2, 0.2, 0.1])
-        n_xs._products["(n,gamma)"] = (xs_2, t, y, q)
+        n_xs.update_type("(n,gamma)", xs_2, ty, q)
+
         mat2.is_default_depletion_library = False
         mat2.flux = np.ones(3) * 1.E19
         mat2.depl_lib_name = mat2_lib.name
         mat2.volume = 1.
         depl_libs[mat2_lib.name] = mat2_lib
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(depl_libs,
+                                                               [mat1, mat2])
 
         test_d.set_msr_params("histogram", solve_method, [sys_data],
                               [mat1, mat2], depl_libs)

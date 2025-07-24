@@ -26,22 +26,29 @@ VALID_OPERATIONS_SECTIONS = ["deplete", "shuffle", "transform", "write_input"]
 VALID_MOVE_TYPES = defaultdict(lambda: ["material"])
 VALID_MOVE_TYPES["mcnp"] = ["material", "universe"]
 DEFAULT_MOVE_TYPE = defaultdict(lambda: "material")
+VALID_TALLY_TYPES = ["material", "universe", "unprocessed"]
+DEFAULT_TALLY_TYPE = defaultdict(lambda: "universe")
 VALID_TRANSFORM_TYPES = defaultdict(lambda: None)
 VALID_TRANSFORM_TYPES["mcnp"] = ["universe", "cell", "surface"]
 DEFAULT_TRANSFORM_TYPE = defaultdict(lambda: None)
 DEFAULT_TRANSFORM_TYPE["mcnp"] = "universe"
+DEFAULT_TRANSFORM_RESET = False
 DEFAULT_LIBRARY_DUMP_ALL = "all_modified"
 VALID_GEOM_SWEEP_TYPES = ["surface"]
 VALID_GEOM_SWEEP_AXES = ["x", "y", "z", "pitch", "yaw", "roll"]
 DEFAULT_GEOM_SWEEP_RANGE_ENDPOINT = True
 VALID_ANGLE_TYPES = ["degrees", "radians"]
 DEFAULT_ANGLE_TYPE = "degrees"
+VALID_GEOM_SEARCH_REFERENCE_POSITION = ["initial", "last"]
+DEFAULT_GEOM_SEARCH_REFERENCE_POSITION = "initial"
+VALID_GEOM_SEARCH_INITIAL_GUESS = ["last"]
 DEFAULT_GEOM_SEARCH_MAX_ITERATIONS = 30
 DEFAULT_GEOM_SEARCH_MIN_ACTIVE_BATCHES = 30
+VALID_GEOM_SEARCH_MIN_ACTIVE_BATCHES = 4
 DEFAULT_GEOM_SEARCH_UNCERTAINTY_FRACTION = 0.6
 DEFAULT_REACTIVITY_THRESH = 0.0
 DEFAULT_REACTIVITY_THRESH_TO_INITIAL = False
-
+DEFAULT_RENORMALIZE_POWER_DENSITY = True
 
 # Define the possible types of neutronics solvers
 NEUTRONICS_SOLVER_TYPES = ["mcnp", "test"]
@@ -59,10 +66,13 @@ MATL_MAX_ID = 99999999
 
 TIME_STRINGF = "%Y-%m-%d %H:%M:%S"
 
-DEFAULT_DENSITY = 1.0
-
 DEFAULT_VOL_TARGET_UNC = 1.E-3  # In units of percent
 DEFAULT_VOL_MAX_HIST = int(10E9)  # Set to 10 billion histories
+
+# Heuristic factor to use in automated chunksize calculation. The heuristic
+# factor (and overall chunksize calculation) are the same as used in Python's
+# multiprocessing.Pool.map() method.
+CHUNKSIZE_FACTOR = 4
 
 # Values here are from the Committee on Data for Science and Technology
 # (CODATA) 2014 recommendation (doi:10.1103/RevModPhys.88.035009).
@@ -73,6 +83,7 @@ K_BOLTZMANN = 8.6173303e-5
 # Unit conversions
 EV_PER_MEV = 1.0e6
 JOULE_PER_EV = 1.6021766208e-19
+SECONDS_PER_DAY = 86400
 
 # Avogadro's constant
 AVOGADRO = 6.022140857e23
@@ -82,6 +93,9 @@ NEUTRON_MASS = 1.00866491588
 
 # The relative precision of volumes to require when doing fuel mgmt
 VOLUME_PRECISION = 1.E-3
+
+# Relative power precision for total reactor power normalization
+POWER_PRECISION = 1.E-2
 
 # Maximum metastable level assumed to exist in a data library
 # This is required because removed versions of isotopes will have
@@ -1412,3 +1426,7 @@ for iso, types in ORIGEN_ISO_DECAY_TYPES_FROM_SRC.items():
     for type_ in ORIGEN_ISO_DECAY_TYPES.keys():
         if type_ in types:
             ORIGEN_ISO_DECAY_TYPES[type_].add(iso)
+
+# the default user tallies managed in the simulation
+DEFAULT_TALLY_IDS = "all"
+DEFAULT_TALLY_TYPE = "universe"

@@ -22,8 +22,8 @@ kwargs = {
     'scripts': glob.glob('scripts/adder_*'),
 
     # Metadata
-    'author': 'Adam Nelson',
-    'author_email': 'agnelson@anl.gov',
+    'author': 'Research and Test Reactor Department - Argonne National Laboratory',
+    'author_email': 'adder@anl.gov',
     'description': 'ADDER',
     'url': 'https://svn.inside.anl.gov/repos/adder/',
     'classifiers': [
@@ -34,12 +34,12 @@ kwargs = {
         'Natural Language :: English',
         'Topic :: Scientific/Engineering'
         'Programming Language :: Python :: 3',
-        'Programming Language :: Python :: 3.7',
+        'Programming Language :: Python :: 3.8',
     ],
 
     # Required dependencies
     'install_requires': [
-        'numpy', 'h5py', "configobj", "scipy", "pytest"
+        'numpy', 'h5py', "configobj", "scipy", "pytest", "pyparsing"
     ],
 
     # Optional dependencies

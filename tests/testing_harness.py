@@ -82,12 +82,15 @@ class TestHarness(object):
 
         log_warnings = []
         log_errors = []
+        log_infos = []
         with open("adder.log", "r") as fin:
             for line in fin.readlines():
                 if "- WARNING -" in line:
                     log_warnings.append(line)
                 elif "- ERROR -" in line:
                     log_errors.append(line)
+                elif "- INFO -" in line:
+                    log_infos.append(line)
 
         # For each message a list is created that contains all the errors or
         # warnings from the ADDER log that contain the message. It is then
@@ -99,6 +102,9 @@ class TestHarness(object):
                        message[2]
             elif message[0] == 'error':
                 assert len([s for s in log_errors if message[1] in s]) == \
+                       message[2]
+            elif message[0] == 'info':
+                assert len([s for s in log_infos if message[1] in s]) == \
                        message[2]
 
     def _get_results(self):
@@ -129,6 +135,49 @@ class TestHarness(object):
             os.rename('results_test.dat', self.results_error_fname)
         assert compare, 'Results do not agree.'
 
+    @staticmethod
+    def _is_float(word):
+        """Checks if a word can be converted to a float."""
+        try:
+            float(word)
+            return True
+        except ValueError:
+            return False
+
+    def _compare_mcnp_files(self, tol=5e-16):
+
+        """This function compares MCNP files with an allowed tolerance for
+        numbers containing decimal places."""
+
+        with open('results_test.dat', "r") as results_test:
+            results_test_lines = results_test.readlines()
+
+        with open(self.results_true_fname) as results_true:
+            results_true_lines = results_true.readlines()
+
+        test_words, true_words = [], []
+
+        for test_line, true_line in zip(results_test_lines, results_true_lines):
+            test_words.extend(test_line.split())
+            true_words.extend(true_line.split())
+
+        # Ensure files have the same number of words
+        assert len(results_test_lines) == len(results_true_lines)
+
+        for i, test_word in enumerate(test_words):
+            true_word = true_words[i]
+
+            if ('.' in test_word and '.' in true_word and
+                    self._is_float(test_word) and self._is_float(true_word)):
+
+                # Ensure any numbers with a decimal place match within tolerance
+                assert (abs(float(test_word) - float(true_word)) < tol)
+
+            else:
+
+                # Ensure any other words match exactly
+                assert test_word == true_word
+
     def _cleanup(self):
         """Delete statepoints, tally, and test files."""
         output = glob.glob('*.h5')
@@ -151,7 +200,7 @@ class TestHarness(object):
         depllib.add_isotope("He4", decay=he4dk)
 
         # U235
-        u235xs = ReactionData("b", 1)
+        u235xs = ReactionData()
         u235xs.add_type("fission", "b", [1.0])
         u235dk = DecayData(None, "s", 200.)
         u235yd = YieldData()
@@ -454,14 +503,14 @@ class CouplingHarness(TestHarness):
 
     def _create_test_lib(self):
         depllib = DepletionLibrary(self.lib_name, np.array([0., 100.]))
-        u235xs = ReactionData("cm2", 1)
+        u235xs = ReactionData()
         u235xs.add_type("fission", "cm2", np.array([self.sig_f]))
         u235nfy = YieldData()
         u235nfy.add_isotope("I134", 1.)
         depllib.add_isotope("U235", xs=u235xs, nfy=u235nfy)
 
         stable = DecayData(None, "s", 0.)
-        I134xs = ReactionData("cm2", 1)
+        I134xs = ReactionData()
         I134xs.add_type("(n,gamma)", "cm2", np.array([self.sig_c]), "I135")
         depllib.add_isotope("I134", xs=I134xs, decay=stable)
         depllib.add_isotope("I135", decay=stable)

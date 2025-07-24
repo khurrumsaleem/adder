@@ -27,7 +27,8 @@ use_depletion_library_xs = False
             k_target = 1.0
             target_interval = 0.001
             bracket_interval = 0., 20.
-            uncertainty_factor = 0.5
+            uncertainty_fraction = 0.5
+            reference_position = "initial"
     [[state 2]]
         label = second_search
         [[[geometry_search_1]]]
@@ -36,3 +37,46 @@ use_depletion_library_xs = False
             target_interval = 0.001
             bracket_interval = 0., 20.
             min_active_batches = 10
+            initial_guess = last
+    [[state 3]]
+        label = third_search
+        [[[geometry_search_1]]]
+            group_name = bank_1
+            k_target = 0.95
+            target_interval = 0.001
+            bracket_interval = -2.5, 2.5
+            min_active_batches = 10
+            initial_guess = 2.0
+            reference_position = "last"
+    [[state 4]]
+        label = fourth_search
+        [[[transform_1]]]
+            group_name = bank_1
+            value = 5.13
+            reset = True
+        [[[geometry_search_1]]]
+            group_name = bank_1
+            k_target = 0.925
+            target_interval = 0.001
+            bracket_interval = -4.13, 13.87
+            min_active_batches = 10
+            reference_position = last
+            initial_guess = last
+    [[state 5]]
+         label = fifth_search
+         [[[geometry_search_1]]]
+            group_name = bank_1
+            k_target = 0.822
+            target_interval = 0.005
+            bracket_interval = 0., 20.
+            uncertainty_fraction = 1
+            reference_position = "initial"
+    [[state 6]]
+         label = sixth_search
+         [[[geometry_search_1]]]
+            group_name = bank_1
+            k_target = 0.822
+            target_interval = 0.015
+            bracket_interval = 0., 20.
+            uncertainty_fraction = 1
+            reference_position = "initial"

@@ -106,6 +106,7 @@ class MSRDepletion(CRAMDepletion, LoggedClass):
             The materials from the reactor definition
         depl_libs : OrderedDict of DepletionLibrary
             The depletion libraries in use in the model
+
         """
 
         self.systems = []
@@ -120,6 +121,8 @@ class MSRDepletion(CRAMDepletion, LoggedClass):
             for comp in system.component_network.keys():
                 if comp.in_core:
                     self.fluid_mats.append(comp.mat_name)
+
+        return
 
     @property
     def solver(self):

@@ -107,11 +107,11 @@ class ControlGroup(LoggedClass):
         """
 
         self_grp = group.create_group(self.name, track_order=True)
-        self_grp.attrs["name"] = np.string_(self.name)
-        self_grp.attrs["type"] = np.string_(self.type)
-        self_grp.attrs["axis"] = np.string_(self.axis)
+        self_grp.attrs["name"] = np.bytes_(self.name)
+        self_grp.attrs["type"] = np.bytes_(self.type)
+        self_grp.attrs["axis"] = np.bytes_(self.axis)
         self_grp.attrs["set"] = self.set
-        self_grp.attrs["angle_units"] = np.string_(self.angle_units)
+        self_grp.attrs["angle_units"] = np.bytes_(self.angle_units)
         self_grp.attrs["displacement"] = self.displacement
 
     @classmethod

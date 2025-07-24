@@ -86,6 +86,9 @@ NOT_MAT_CARDS = ["mesh", "mgopt", "mode", "mphys", "mplot", "mx", "mp",
 
 # The tally id to use for ADDER-specific tallies
 ADDER_TALLY_ID = TALLY_MAX_ID - 10 + 1
+ADDER_USER_TALLY_ID = 10000000
+VALID_TALLY_TYPES = ["universe", "material", "unprocessed"]
+VALID_FCARD_TALLY_TYPES = ["cell", "surface", "point number", "no facet type assigned"]
 
 # The print tables that ADDER requires in MCNP output
 PRINT_TABLES = [60, 128, 130]
@@ -119,3 +122,5 @@ MAT_KW = ["gas", "estep", "hstep", "nlib", "plib", "pnlib", "elib", "hlib",
           "cond"]
 
 CELL_DENSITY_FMT = "{:.13E}"
+
+

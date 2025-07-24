@@ -5,11 +5,11 @@ import shlex
 
 import numpy as np
 
-from adder.isotope import update_isotope_depleting_status
+import adder.isotope
 from adder.material import Material
 from adder.loggedclass import LoggedClass
 from adder.type_checker import *
-from adder.constants import IN_CORE
+from adder.constants import IN_CORE, SUPPLY
 
 
 class Neutronics(LoggedClass):
@@ -94,6 +94,8 @@ class Neutronics(LoggedClass):
         self.neutronics_isotopes = OrderedDict()
         self.reactivity_threshold = reactivity_threshold
         self.reactivity_threshold_initial = reactivity_threshold_initial
+        #self.user_tallies = OrderedDict()
+
 
         # Set up the logger and log that we initialized our Neutronics
         # solver
@@ -195,6 +197,7 @@ class Neutronics(LoggedClass):
                            equality=True)
         self._reactivity_threshold = reactivity_threshold
 
+
     @property
     def reactivity_threshold_initial(self):
         return self._reactivity_threshold_initial
@@ -265,11 +268,11 @@ class Neutronics(LoggedClass):
         """
 
         # Store the runtime options as root attributes
-        h5_file.attrs["neutronics_solver"] = np.string_(self.solver)
-        h5_file.attrs["neutronics_mpi_cmd"] = np.string_(self.mpi_cmd)
-        h5_file.attrs["neutronics_exec"] = np.string_(self.exec_cmd)
+        h5_file.attrs["neutronics_solver"] = np.bytes_(self.solver)
+        h5_file.attrs["neutronics_mpi_cmd"] = np.bytes_(self.mpi_cmd)
+        h5_file.attrs["neutronics_exec"] = np.bytes_(self.exec_cmd)
         h5_file.attrs["base_neutronics_input_filename"] = \
-            np.string_(self.base_input_filename)
+            np.bytes_(self.base_input_filename)
         h5_file.attrs["num_neutronics_threads"] = self.num_threads
         h5_file.attrs["num_mpi_procs"] = self.num_procs
         h5_file.attrs["use_depletion_library_xs"] = \
@@ -278,7 +281,37 @@ class Neutronics(LoggedClass):
         h5_file.attrs["reactivity_threshold_initial"] = \
             np.bool_(self.reactivity_threshold_initial)
 
-    def read_input(self, library_data, num_neutron_groups, user_mats_info,
+    def parse_library(self, library_data):
+        """Parses the neutronics library data for establishing the isotope
+        registry
+
+        Parameters
+        ----------
+        library_data : str or None
+            The filename and path to the library data. If None, then it must
+            be obtained from the environment or input, depending on the solver.
+
+        Returns
+        -------
+        neutronics_library_isos : dict
+            The keys are the isotope names in GND format and the values are an
+            Iterable of associated library names available in the neutronics
+            library
+        """
+
+        self.library_data = library_data
+
+        neutronics_library_isos = {}
+        if library_data == "test_lib_file.txt":
+            neutronics_library_isos['H1'] = set(['70c'])
+            neutronics_library_isos['U235'] = set(['70c'])
+            neutronics_library_isos['U238'] = set(['72c'])
+        else:
+            neutronics_library_isos['U235'] = set(['70c'])
+
+        return neutronics_library_isos
+
+    def read_input(self, num_neutron_groups, user_mats_info,
                    user_univ_info, shuffled_mats, shuffled_univs, depl_libs):
         """Return parsed information about the neutronics input file,
         including all the information needed to initialize
@@ -290,14 +323,13 @@ class Neutronics(LoggedClass):
 
         Parameters
         ----------
-        library_data : str
-            The filename and path to the library data
         num_neutron_groups : int
             The number of energy groups
         user_mats_info : OrderedDict
             The keys are the ids in the neutronics solver and
             the value is an OrderedDict of the name, depleting boolean,
-            ex_core_status, non_depleting_isotopes list, and
+            volume, density, non_depleting_isotopes list, 
+            apply_reactivity_threshold_to_initial_inventory flag, and 
             use_default_depletion_library flag.
         user_univ_info : OrderedDict
             The keys are the universe ids in the neutronics solver and
@@ -316,7 +348,6 @@ class Neutronics(LoggedClass):
             model; since no is_depleting (or isotope is_depleting)
             information is available at this stage, this must be
             overwritten upstream.
-
         """
 
         # Set default testing values
@@ -325,12 +356,12 @@ class Neutronics(LoggedClass):
         input_file["runmode"] = ["fast"]
         self.base_input = input_file
 
-        # Create two test material objects
+        # Create three test material objects
         name = "1"
         id_ = 1
         density = 1.
         # Differentiate for our two unit test types
-        if library_data == "test_lib_file.txt":
+        if self.library_data == "test_lib_file.txt":
             # Then this is the test_reactor case
             isotope_data = [("H1", "70c", False), ["U235", "70c"],
                             ["U238", "72c"]]
@@ -361,11 +392,13 @@ class Neutronics(LoggedClass):
             key = "non_depleting_isotopes"
             if len(user_mats_info[id_][key]) > 0:
                 # Then we have specific values
-                for i, iso in enumerate(mat1.isotopes):
+                for i in range(mat1.num_isotopes):
+                    iso = mat1.isotope_obj(i)
+                    iso_idx = mat1.isotopes[i]
                     if iso.name in user_mats_info[id_][key]:
                         mat1.isotopes[i] = \
-                            update_isotope_depleting_status(iso, False)
-            key = "reactivity_threshold_initial"
+                            adder.isotope.ISO_REGISTRY.switch_iso_depleting_status(iso_idx, False)
+            key = "apply_reactivity_threshold_to_initial_inventory"
             if key in user_mats_info[id_]:
                 mat_reactivity_threshold_initial = \
                     user_mats_info[id_][key]
@@ -376,7 +409,7 @@ class Neutronics(LoggedClass):
 
         name = "2"
         id_ = 2
-        if library_data != "test_lib_file.txt":
+        if self.library_data != "test_lib_file.txt":
             atom_fractions = [2.]
         mat2 = Material(name, id_, density, isotope_data,
                         atom_fractions, is_depleting,
@@ -396,11 +429,13 @@ class Neutronics(LoggedClass):
             key = "non_depleting_isotopes"
             if len(user_mats_info[id_][key]) > 0:
                 # Then we have specific values
-                for i, iso in enumerate(mat2.isotopes):
+                for i in range(mat2.num_isotopes):
+                    iso = mat2.isotope_obj(i)
+                    iso_idx = mat2.isotopes[i]
                     if iso.name in user_mats_info[id_][key]:
                         mat2.isotopes[i] = \
-                            update_isotope_depleting_status(iso, False)
-            key = "reactivity_threshold_initial"
+                            adder.isotope.ISO_REGISTRY.switch_iso_depleting_status(iso_idx, False)
+            key = "apply_reactivity_threshold_to_initial_inventory"
             if key in user_mats_info[id_]:
                 mat_reactivity_threshold_initial = \
                     user_mats_info[id_][key]
@@ -409,7 +444,57 @@ class Neutronics(LoggedClass):
                     self.reactivity_threshold_initial
             mat2.establish_initial_isotopes(mat_reactivity_threshold_initial)
 
-        materials = [mat1, mat2]
+        # A third test material is added to test storage materials
+        name = "supply_123_test"
+        id_ = 7
+        # Differentiate for our two unit test types
+        if self.library_data == "test_lib_file.txt":
+            # Then this is the test_reactor case
+            isotope_data = [("H1", "70c", False), ["U235", "70c"],
+                            ["U238", "72c"]]
+            atom_fractions = [4., 5., 1.]
+        else:
+            # Then this is an integral test
+            isotope_data = [("U235", "70c")]
+            atom_fractions = [1.]
+        is_depleting = True
+        default_xs_library = "71c"
+        thermal_xs_libraries = []
+        mat3 = Material(name, id_, density, isotope_data, atom_fractions,
+                        is_depleting, default_xs_library, 1,
+                        thermal_xs_libraries, SUPPLY)
+
+        if id_ in user_mats_info:
+            mat3.name = user_mats_info[id_]["name"]
+            mat3.is_depleting = user_mats_info[id_]["depleting"]
+            if "density" in user_mats_info[id_] and user_mats_info[id_]["density"] is not None:
+                mat3.density = user_mats_info[id_]["density"]
+            if "volume" in user_mats_info[id_] and user_mats_info[id_]["volume"] is not None:
+                mat3.volume = user_mats_info[id_]["volume"]
+            if not self.use_depletion_library_xs:
+                mat3.is_default_depletion_library = \
+                    user_mats_info[id_]["use_default_depletion_library"]
+            else:
+                mat3.is_default_depletion_library = True
+            key = "non_depleting_isotopes"
+            if len(user_mats_info[id_][key]) > 0:
+                # Then we have specific values
+                for i in range(mat3.num_isotopes):
+                    iso = mat3.isotope_obj(i)
+                    iso_idx = mat3.isotopes[i]
+                    if iso.name in user_mats_info[id_][key]:
+                        mat3.isotopes[i] = \
+                            adder.isotope.ISO_REGISTRY.switch_iso_depleting_status(iso_idx, False)
+            key = "apply_reactivity_threshold_to_initial_inventory"
+            if key in user_mats_info[id_]:
+                mat_reactivity_threshold_initial = \
+                    user_mats_info[id_][key]
+            else:
+                mat_reactivity_threshold_initial = \
+                    self.reactivity_threshold_initial
+            mat3.establish_initial_isotopes(mat_reactivity_threshold_initial)
+
+        materials = [mat1, mat2, mat3]
 
         for mat in materials:
             self.update_logs(mat.logs)
@@ -418,8 +503,8 @@ class Neutronics(LoggedClass):
         return materials
 
     def execute(self, filename, label, materials, depl_libs, store_input,
-                deplete_tallies, user_tallies, user_output, fast_forward,
-                update_iso_status=True):
+                deplete_tallies, user_tallies_adder_i, include_user_tallies, user_output,
+                fast_forward, update_iso_status=True):
         """Writes the input file, executes the neutronics solver, and
         then reads the results
 
@@ -437,8 +522,10 @@ class Neutronics(LoggedClass):
             Whether or not to store the input file in :attrib:`inputs`
         deplete_tallies : bool
             Whether or not to write the tallies needed for depletion
-        user_tallies : bool
-            Whether or not to write the user tallies
+        user_tallies_adder_i : dict
+            Dictionary containing info from ADDER input
+        include_user_tallies : bool
+            Including or not user tallies in the input.
         user_output : bool
             Whether or not to write the user's output control cards
         fast_forward : bool
@@ -453,19 +540,19 @@ class Neutronics(LoggedClass):
 
         inp_name = filename + ".inp"
         self.write_input(inp_name, label, materials, depl_libs, store_input,
-                         deplete_tallies, user_tallies, user_output,
-                         update_iso_status)
+                         deplete_tallies, user_tallies_adder_i,
+                         include_user_tallies, user_output, update_iso_status)
 
         self._exec_solver(inp_name, filename, fast_forward=fast_forward)
 
-        keff, keff_uncertainty, flux, nu, volumes = \
+        keff, keff_uncertainty, flux, nu, volumes, user_tally_res = \
             self._read_results(filename, materials, depl_libs, deplete_tallies)
 
-        return keff, keff_uncertainty, flux, nu, volumes
+        return keff, keff_uncertainty, flux, nu, volumes, user_tally_res
 
     def write_input(self, filename, label, materials, depl_libs, store_input,
-                    deplete_tallies, user_tallies, user_output,
-                    update_iso_status=True):
+                    deplete_tallies, user_tallies_adder_i, include_user_tallies,
+                    user_output, update_iso_status=True):
         """Updates the input for the particular run case.
 
         Parameters
@@ -482,8 +569,10 @@ class Neutronics(LoggedClass):
             Whether or not to store the input file in :attrib:`inputs`
         deplete_tallies : bool
             Whether or not to write the tallies needed for depletion
-        user_tallies : bool
-            Whether or not to write the user tallies
+        user_tallies_adder_i : dict
+            Dictionary containing info from ADDER input
+        include_user_tallies : bool
+            Including or not user tallies in the input.
         user_output : bool
             Whether or not to write the user's output control cards
         update_iso_status : bool, optional
@@ -552,8 +641,12 @@ class Neutronics(LoggedClass):
         volumes = OrderedDict()
         volumes[1] = 0.4
         volumes[2] = 0.6
+        user_tally_res = OrderedDict()
+        user_tally_res["1"] = {}
+        user_tally_res["1"]["tally_matrix"] = np.array([[1., 0., 0., 0., 0., 0., 0., 0]])
+        user_tally_res["1"]["tally_matrix_err"] = np.array([[1., 0., 0., 0., 0., 0., 0., 0]])
 
-        return keff, keff_uncertainty, flux, nu, volumes
+        return keff, keff_uncertainty, flux, nu, volumes, user_tally_res
 
     def calc_volumes(self, materials, vol_data, target_unc, max_hist,
                      only_depleting):
@@ -620,7 +713,8 @@ class Neutronics(LoggedClass):
         check_iterable_type("materials", materials, Material)
 
     def transform(self, names, yaw, pitch, roll, angle_units, matrix,
-                  displacement, transform_type, transform_in_place=False):
+                  displacement, transform_type, transform_in_place=False, 
+                  matrix_notation="mcnp", reset=False):
         """Transforms the universe named `name` according to the angles in
         yaw, pitch, and roll and the translation in displacement.
 
@@ -651,6 +745,14 @@ class Neutronics(LoggedClass):
         transform_in_place : bool, optional
             If the existing transform should be updated (True) or a new
             transform created. Defaults to False.
+        matrix_notation : {"common", "mcnp"}
+            The notation used to define the rotation matrix. The matrix with
+            the MCNP notation corresponds to the transpose of the matrix defined
+            w/ the common mathematical notation ("common") to perform geometrical 
+            rotation.
+        reset : bool
+            If True, the position of the entity is reset to the initial one 
+            provided in the MCNP base input file.
         """
 
         # Perform type checking
@@ -665,11 +767,13 @@ class Neutronics(LoggedClass):
         check_iterable_type("displacement", displacement, float)
         check_length("displacement", displacement, 3)
         check_type("transform_in_place", transform_in_place, bool)
+        check_type("reset", reset, bool)
 
     def geom_search(self, transform_type, axis, names, angle_units, k_target,
-                    bracket_interval, target_interval, uncertainty_fraction,
+                    bracket_interval, reference_position, target_interval, 
+                    uncertainty_fraction,
                     initial_guess, min_active_batches, max_iterations,
-                    materials, case_idx, operation_idx, depl_libs):
+                    materials, case_idx, operation_idx, depl_libs, user_tallies_adder_i):
         """Performs a search of geometric transformations to identify that
         which yields the target k-eigenvalue within the specified interval.
 
@@ -688,6 +792,12 @@ class Neutronics(LoggedClass):
             The units of the above angles
         k_target : float
             The target k-eigenvalue to search for
+        reference_position: str or float
+            The reference point for the bracket_interval values.
+            'initial' denotes the initial position of the
+            control group in the neutronics input; whereas
+            'last' referes to the last known position of the
+            control group. If float, the float is the position.
         bracket_interval : Iterable of float
             The lower and upper end of the ranges to search.
         target_interval : float
@@ -696,8 +806,8 @@ class Neutronics(LoggedClass):
             This parameter sets the stochastic uncertainty to target when the
             initial computation of an iteration reveals that a viable solution
             may exist.
-        initial_guess : float
-            The starting point to search
+        initial_guess : float or str
+            The starting point to search. If "last" use the last position
         min_active_batches : int
             The starting number of batches to run to ensure enough keff samples
             so that it follows the law of large numbers. This is the number of
@@ -714,6 +824,8 @@ class Neutronics(LoggedClass):
             The operation index, for printing
         depl_libs : OrderedDict of DepletionLibrary
             The depletion libraries in use in the model
+        user_tallies_adder_i : dict
+            User tallies to be processed, assigned in the ADDER input
 
         Returns
         -------

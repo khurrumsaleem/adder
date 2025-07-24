@@ -45,4 +45,5 @@ def test_cram16_deplete():
     # flux.
     test = DepleteHarness([""], "test.h5", "test16.add")
     test._build_inputs()
+    test._create_test_lib()
     test.main()

@@ -2,10 +2,10 @@ import multiprocessing as mp
 import traceback
 import weakref
 
-from adder.reactor import Reactor, depletion_worker, par_depl_init, \
-    library_worker
+from adder.reactor import Reactor, parallel_worker, parallel_init
 from adder.cram import CRAMDepletion
-from adder.constants import SUPPLY, BASE_LIB
+from adder.constants import SUPPLY, BASE_LIB, CHUNKSIZE_FACTOR
+from adder.isotope import ISO_REGISTRY
 
 
 class MSRReactor(Reactor):
@@ -96,6 +96,12 @@ class MSRReactor(Reactor):
         The standard deviation of the calculated k-eigenvalue for the
         current state point; value is 0.0 if a deterministic solver is
         used.
+    control_groups : dict
+        The set of control group information from the input file, including
+        the current perturbation status. The key to the dict is the name and
+        the value is an instance of a ControlGroup object.
+    fast_forward : bool
+        Whether this is a fast forward run (True) or not (False).
     fixed_fuel_depletion : adder.Depletion
         The depletion solver interface for the fixed fuel
 
@@ -158,7 +164,9 @@ class MSRReactor(Reactor):
         user_mats_info : OrderedDict
             The keys are the ids in the neutronics solver and
             the value is an OrderedDict of the name, depleting boolean,
-            ex_core_status, and non_depleting_isotopes list.
+            volume, density, non_depleting_isotopes list, 
+            apply_reactivity_threshold_to_initial_inventory flag, and 
+            use_default_depletion_library flag.
         user_univ_info : OrderedDict
             The keys are the universe ids in the neutronics solver and
             the value is an OrderedDict of the name.
@@ -202,11 +210,38 @@ class MSRReactor(Reactor):
                         self.depletion_libs[new_lib.name] = new_lib
                         mat.depl_lib_name = new_lib.name
 
+        # Get the new isotopes
+        new_isos = {}
+        for system in self.depletion.systems:
+            sys_lib = system.library
+            sys_isos = [
+                iso_name for iso_name, index in
+                    sys_lib.isotope_indices.items()
+                    if index >= system.num_original_isotopes]
+            for iso in sys_isos:
+                for mat in fluid_mats:
+                    xs_lib = mat.default_xs_library
+                    if iso in new_isos:
+                        new_isos[iso].add(xs_lib)
+                    else:
+                        new_isos[iso] = set([xs_lib])
+        # Now we can add it
+        for iso_name, iso_xs_libs in new_isos.items():
+            for xs_lib in iso_xs_libs:
+                for is_depleting in (True, False):
+                    ISO_REGISTRY.register_isotope(iso_name, xs_lib,
+                    is_depleting)
+
     def _parallel_depletion_manager(self, dt, depletion_step, num_substeps):
         """Executes the depletion in parallel"""
 
         if dt <= 0.:
             return
+
+        # Determine the number of depleting materials
+        num_depl_mats = len(list((i for i, mat in enumerate(self._materials) if
+                     (mat.name not in self.depletion.fluid_mats and
+                      mat.is_depleting and mat.status != SUPPLY))))
 
         # Deplete the flowing fluid materials
         self.log("info", "Depleting Fluid System Materials", 8)
@@ -215,15 +250,12 @@ class MSRReactor(Reactor):
 
         # And now deplete the remaining materials
         # Update the materials that are not fluids
-        other_mats = []
-        for i, mat in enumerate(self.materials):
-            if mat.name not in self.depletion.fluid_mats:
-                if mat.is_depleting and mat.status != SUPPLY:
-                    lib = self.depletion_libs[mat.depl_lib_name]
-                    other_mats.append((i, mat, lib))
+        mat_idxs = (i for i, mat in enumerate(self._materials) if
+                     (mat.name not in self.depletion.fluid_mats and
+                      mat.is_depleting and mat.status != SUPPLY))
 
-        msg = "Depleting {:,} Remaining Materials with {} Thread".format(
-            len(other_mats), self.fixed_fuel_depletion.num_threads)
+        msg = "Depleting Remaining Materials with {} Thread".format(
+            self.fixed_fuel_depletion.num_threads)
         if self.fixed_fuel_depletion.num_threads > 1:
             # Make it plural
             msg += "s"
@@ -231,79 +263,82 @@ class MSRReactor(Reactor):
 
         self.fixed_fuel_depletion.compute_decay(self.depletion_libs[BASE_LIB])
 
-        self.log("info", "Computing Libraries", 10)
-        data = []
-        weak_deplete = weakref.proxy(self.fixed_fuel_depletion)
-        args_list = ((i, weak_deplete, mat.flux, lib)
-                     for i, mat, lib in other_mats)
-        if self.fixed_fuel_depletion.num_threads == 1:
-            for args in args_list:
-                i, mtx, idxs, inv_idxs = library_worker(args)
-                data.append((i, self.materials[i], mtx, idxs, inv_idxs))
-        else:
-            chunksize = self.fixed_fuel_depletion.chunksize
-            tasksperchild = 1
-            with mp.Pool(processes=self.fixed_fuel_depletion.num_threads,
-                         maxtasksperchild=tasksperchild) as pool:
-                for i, mtx, idxs, inv_idxs in pool.imap(library_worker,
-                                                        args_list,
-                                                        chunksize=chunksize):
-                    data.append((i, self.materials[i], mtx, idxs, inv_idxs))
-
+        # Perform the depletion
         self.log("info", "Executing Depletion", 10)
-        # Provide a single-threaded case for much easier debugging
-        if self.fixed_fuel_depletion.num_threads == 1:
-            for i, mat, mtx, idxs, inv_idxs in data:
+        weak_deplete = weakref.proxy(self.fixed_fuel_depletion)
+        if self.depletion.num_threads == 1:
+            for i_mat in mat_idxs:
+                mat = self._materials[i_mat]
+                lib = self.depletion_libs[mat.depl_lib_name]
+                matrix = weak_deplete.compute_library(lib, mat._flux)
+
                 try:
                     new_isos, new_fracs, new_density = \
-                        self.fixed_fuel_depletion.execute(
-                            mat, mtx, idxs, inv_idxs, dt,
-                            depletion_step, num_substeps, True)
+                        weak_deplete.execute(mat, matrix,
+                                             lib.isotope_indices,
+                                             lib.inverse_isotope_indices, dt,
+                                             depletion_step, num_substeps,
+                                             True)
                 except Exception:
                     error_msg = traceback.format_exc()
-                    self.log("error", error_msg)
-                mat.apply_new_composition(new_isos, new_fracs, new_density)
+                    print(error_msg)
+                self._materials[i_mat].apply_new_composition(
+                    new_isos, new_fracs, new_density)
         else:
-            # Do the parallel processing of depletion
+
+            # Calculate chunksize
+            if weak_deplete.chunksize == 0:
+                chunksize, extra = divmod(num_depl_mats,
+                                    weak_deplete.num_threads * CHUNKSIZE_FACTOR)
+                if extra:
+                    chunksize += 1
+
+                # Check to make sure chunksize is an integer greater than zero
+                chunksize = int(chunksize)
+                if chunksize < 1:
+                    chunksize = 1
+
+            else:
+                chunksize = weak_deplete.chunksize
+
+            # Do the parallel processing
             errors = []
-            chunksize = self.fixed_fuel_depletion.chunksize
-            tasksperchild = 1
+
             with mp.Pool(
-                    processes=self.fixed_fuel_depletion.num_threads,
-                    initializer=par_depl_init,
-                    initargs=(weak_deplete, dt, depletion_step, num_substeps),
-                    maxtasksperchild=tasksperchild) as pool:
-                for i, new_isos, new_fracs, new_density \
-                    in pool.imap_unordered(depletion_worker, data,
+                    processes=weak_deplete.num_threads,
+                    initializer=parallel_init,
+                    initargs=(weak_deplete, dt, depletion_step, num_substeps)) as pool:
+                for i_mat, new_isos, new_fracs, new_density \
+                    in pool.imap_unordered(parallel_worker, mat_idxs,
                                            chunksize=chunksize):
                     if isinstance(new_isos, str):
-                        errors.append((i, new_isos))
+                        errors.append((i_mat, new_isos))
                     else:
-                        self.materials[i].apply_new_composition(
+                        self._materials[i_mat].apply_new_composition(
                             new_isos, new_fracs, new_density)
+
             # Now we handle the errors. They *may* be due to parallel system
-            # issues (file I/O, etc), so lets just run the few cases in
-            # parallel
+            # issues (file I/O, etc), so lets just run the few cases in serial
             if len(errors) > 0:
                 # Now raise the error messages
-                msg = "The Following Solid Materials Encountered Errors " + \
-                    "While Processed in Parallel:"
+                msg = "The Following Materials Encountered Errors While " + \
+                    "Processed in Parallel:"
                 self.log("info_file", msg)
-                for i, error in errors:
+                for i_mat, error in errors:
                     self.log("info_file", error)
                 self.log("info", "Rerunning Failed Depletions", 8)
                 # And re-run in serial
-                for i, _ in errors:
-                    mat = self.materials[i]
+                for i_mat, _ in errors:
+                    mat = self._materials[i_mat]
                     lib = self.depletion_libs[mat.depl_lib_name]
                     mtx = self.depletion.compute_library(lib, mat.flux),
                     idxs = lib.isotope_indices
                     inv_idxs = lib.inverse_isotope_indices
                     try:
                         new_isos, new_fracs, new_density = \
-                            self.fixed_fuel_depletion.execute(mat, mtx, idxs,
-                                inv_idxs, dt, depletion_step, num_substeps,
-                                True)
+                            self.depletion.execute(
+                                mat, mtx, idxs, inv_idxs,
+                                dt, depletion_step, num_substeps, True)
                     except Exception:
                         error_msg = traceback.format_exc()
                         self.log("error", error_msg)

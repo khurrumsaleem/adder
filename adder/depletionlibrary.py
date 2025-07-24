@@ -1,4 +1,3 @@
-from collections import OrderedDict
 from copy import deepcopy
 import os
 import math
@@ -11,6 +10,9 @@ from adder.type_checker import *
 from adder.constants import MAX_METASTABLE_STATE, FILETYPE_DEPLETION_LIBRARY, \
     VERSION_DEPLETION_LIBRARY
 import adder.data
+
+
+NP_DTYPE_TARGET_YIELDS = np.dtype([('targets', 'U9'), ('yields', np.double)])
 
 # Constants specific to obtaining data from ORIGEN2.2
 # How many characters are in an ORIGEN library id
@@ -34,9 +36,9 @@ _DECAY_UNITS = ['s', 'm', 'hr', 'd', 'yr', 'kyr', 'Myr', 'Gyr']
     # The following are based on ENDF/B-VII.1 decay data
 _DECAY_TYPES = \
     ["alpha", "n", "n,n", "p", "p,p", "beta-", "beta-,n",
-        "beta-,n,n", "beta-,n,n,n", "beta-,n,n,n,n", "beta-,alpha",
-        "beta-,beta-", "ec/beta+", "ec/beta+,alpha", "ec/beta+,p",
-        "ec/beta+,p,p", "ec/beta+,sf", "it", "sf", "removal"]
+     "beta-,n,n", "beta-,n,n,n", "beta-,n,n,n,n", "beta-,alpha",
+     "beta-,beta-", "ec/beta+", "ec/beta+,alpha", "ec/beta+,p",
+     "ec/beta+,p,p", "ec/beta+,sf", "it", "sf", "removal"]
 
 _DECAY_SECONDARY_PARTICLES = {
     "alpha": [(1., "He4")],
@@ -59,7 +61,7 @@ _RXN_TYPES = \
         '(n,n2p)', '(n,2a)', '(n,3a)', '(n,2p)', '(n,pa)', '(n,t2a)',
         '(n,d2a)', '(n,pd)', '(n,pt)', '(n,da)']
 
-_RXN_NEUTRON_MULTIPLICITES = \
+_RXN_NEUTRON_MULTIPLICITIES = \
     {'(n,gamma)': 0., '(n,2n)': 2., '(n,3n)': 3., '(n,4n)': 4.,
         'fission': 2.43, '(n,p)': 0., '(n,d)': 0., '(n,t)': 0., '(n,3He)': 0.,
         '(n,a)': 0., '(n,2nd)': 2., '(n,na)': 1., '(n,3na)': 3.,
@@ -78,9 +80,9 @@ _RXN_SECONDARY_PARTICLES = {
     '(n,2na)': [(1., 'He4')], '(n,np)': [(1., 'H1')],
     '(n,n2a)': [(2., 'He4')], '(n,2n2a)': [(2., 'He4')],
     '(n,nd)': [(1., 'H2')], '(n,nt)': [(1., 'H3')],
-    '(n,nHe-3)': [(1., 'He3')], '(n,nd2a)': [(1., 'H2'), (1., 'He4')],
+    '(n,nHe-3)': [(1., 'He3')], '(n,nd2a)': [(1., 'H2'), (2., 'He4')],
     '(n,nt2a)': [(1., 'H3'), (2., 'He4')], '(n,2np)': [(1., 'H1')],
-    '(n,3np)': [(1., 'H1')], '(n,n2p)': [(1., 'H1')],
+    '(n,3np)': [(1., 'H1')], '(n,n2p)': [(2., 'H1')],
     '(n,2a)': [(2., 'He4')], '(n,3a)': [(3., 'He4')],
     '(n,2p)': [(2., 'H1')], '(n,pa)': [(1., 'H1'), (1., 'He4')],
     '(n,t2a)': [(1., 'H3'), (2., 'He4')],
@@ -105,13 +107,12 @@ class IsotopeData(object):
 
     Parameters
     ----------
-    name : str
-        GND name of the isotope represented by this class
+    atomic_mass : float, optional
+        The atomic mass, in units of amu. Defaults to a value of 1, which is
+        to be used for pseudo-nuclides
 
     Attributes
     ----------
-    name : str
-        GND name of the isotope represented by this class
     atomic_mass : float
         The atomic mass, in units of amu. For pseudo-nuclides, this will
         have a value of 1
@@ -126,22 +127,11 @@ class IsotopeData(object):
         applicable to MSR's
     """
 
-    def __init__(self, name):
-        self.name = name
-        is_isotope = adder.data.is_isotope(self.name)
+    __slots__ = ['_atomic_mass', '_decay', '_removal', '_neutron_xs',
+                 '_neutron_fission_yield']
 
-        if is_isotope:
-            # Set the atomic mass
-            amu = adder.data.atomic_mass(self.name)
-            if amu is None:
-                # Then this isotope is not present in the source data
-                # for the atomic mass info (could be a pseudo-nuc)
-                # if so, use the value of A
-                _, a, _ = adder.data.zam(self.name)
-                amu = float(a)
-        else:
-            amu = 1.
-        self.atomic_mass = amu
+    def __init__(self, atomic_mass=1.):
+        self.atomic_mass = atomic_mass
 
         # Initialize the member data containers
         self.neutron_xs = None
@@ -150,7 +140,7 @@ class IsotopeData(object):
         self.removal = None
 
     def __repr__(self):
-        return "<IsotopeData: {}>".format(self.name)
+        return "<IsotopeData: {}>".format(self.atomic_mass)
 
     def __deepcopy__(self, memo):
         # This method is called when copy.deepcopy() is called as a result
@@ -158,22 +148,12 @@ class IsotopeData(object):
         # actually be a deepcopy of only the neutron_xs and removal data.
         # The rest will be a reference to the original (i.e., a shallow copy)
 
-        that = IsotopeData(self._name)
-        that._atomic_mass = self._atomic_mass
+        that = IsotopeData(self._atomic_mass)
         that._neutron_xs = deepcopy(self._neutron_xs)
         that._neutron_fission_yield = self._neutron_fission_yield
         that._decay = self._decay
         that._removal = deepcopy(self._removal)
         return that
-
-    @property
-    def name(self):
-        return self._name
-
-    @name.setter
-    def name(self, name):
-        check_type("name", name, str)
-        self._name = name
 
     @property
     def atomic_mass(self):
@@ -229,12 +209,12 @@ class IsotopeData(object):
     def get_total_removal_xs(self, units):
         if self.neutron_xs is not None:
             xs = self.neutron_xs.total_xs
-            if self.neutron_xs.xs_units == units:
-                return xs
+            if xs is None:
+                return None
             if units == "b":
-                return np.copy(xs) * 1.E24
+                return xs
             elif units == "cm2":
-                return np.copy(xs) * 1.E-24
+                return xs * 1.E-24
         else:
             return None
 
@@ -289,7 +269,7 @@ class IsotopeData(object):
 
         Parameters
         ----------
-        isotopic_group : h5py.Group
+        iso_group : h5py.Group
             The hdf5 group with this data
         name : str
             The name of the isotope
@@ -299,16 +279,30 @@ class IsotopeData(object):
         # Get the isotopic data we need to initialize the IsotopeData
         # class
         if "decay" in iso_group:
-            decay = DecayData.from_hdf5(iso_group["decay"], name)
+            decay = DecayData.from_hdf5(iso_group["decay"])
         if "neutron_xs" in iso_group:
-            neutron_xs = ReactionData.from_hdf5(iso_group["neutron_xs"], name)
+            neutron_xs = ReactionData.from_hdf5(iso_group["neutron_xs"])
         if "neutron_fission_yield" in iso_group:
-            nfy = YieldData.from_hdf5(iso_group["neutron_fission_yield"], name)
+            nfy = YieldData.from_hdf5(iso_group["neutron_fission_yield"])
         if "removal" in iso_group:
-            removal = DecayData.from_hdf5(iso_group["removal"], name)
+            removal = DecayData.from_hdf5(iso_group["removal"])
 
         # Now we can create our object
-        this = cls(name)
+        is_isotope = adder.data.is_isotope(name)
+
+        if is_isotope:
+            # Set the atomic mass
+            atomic_mass = adder.data.atomic_mass(name)
+            if atomic_mass is None:
+                # Then this isotope is not present in the source data
+                # for the atomic mass info (could be a pseudo-nuc)
+                # if so, use the value of A
+                _, a, _ = adder.data.zam(name)
+                atomic_mass = float(a)
+        else:
+            atomic_mass = 1.
+
+        this = cls(atomic_mass)
 
         if "decay" in iso_group:
             this.decay = decay
@@ -331,13 +325,11 @@ class IsotopeData(object):
 
 
 class DecayData(object):
-    """Decay mode information for an isotope.
+    """This class contains decay mode information for an isotope including the
+     half-life, units of the half-life, and decay energy.
 
-    Decay products are accessed via dictionary-like interface where the
-    key is the decay type (e.g., "alpha" for an alpha decay) and the
-    corresponding value is a 3-tuple of the branching ratio, a list of
-    the decay products (including the secondary products, like He4 for
-    an alpha decay), and the yield of each of these products.
+    Decay product information (branching ratios, targets, yields) are accessed
+    via class interface functions.
 
     Parameters
     ----------
@@ -356,13 +348,17 @@ class DecayData(object):
         The units of the half-life
     decay_energy : float
         Average energy deposited from decay in units of MeV
-    """
+     """
+
+    __slots__ = ['_half_life', '_decay_energy', '_half_life_units',
+                 '_product_types', '_products']
 
     def __init__(self, half_life, half_life_units, decay_energy):
         self.half_life = half_life
         self.half_life_units = half_life_units
         self.decay_energy = decay_energy
-        self._products = {}
+        self._product_types = tuple()
+        self._products = tuple()
 
     @property
     def half_life(self):
@@ -388,7 +384,7 @@ class DecayData(object):
 
     @decay_energy.setter
     def decay_energy(self, decay_energy):
-        check_type("decay_energy", decay_energy, float)
+        check_type("decay_energy", decay_energy, (float, np.double))
         self._decay_energy = decay_energy
 
     @property
@@ -403,28 +399,36 @@ class DecayData(object):
 
     @property
     def num_types(self):
-        return len(self._products)
+        return len(self._product_types)
 
     def __contains__(self, type_):
-        return type_ in self._products
+        return type_ in self._product_types
 
-    def __iter__(self):
-        return iter(self._products.values())
+    def get_type_by_idx(self, idx):
+        return self._product_types[idx]
 
-    def __getitem__(self, type_):
-        if type_ in self._products:
-            return self._products[type_]
-        else:
+    def get_type_index(self, type_):
+        try:
+            idx = self._product_types.index(type_)
+        except ValueError:
             return None
+        return idx
 
-    def keys(self):
-        return iter(self._products.keys())
+    def get_product_data_by_idx(self, idx):
+        return self._products[idx]
 
-    def items(self):
-        return iter(self._products.items())
+    def get_product_data_by_type(self, type_):
+        try:
+            idx = self._product_types.index(type_)
+        except ValueError:
+            return None
+        return self._products[idx]
 
-    def values(self):
-        return iter(self._products.values())
+    def get_br_by_idx(self, idx):
+        return self._products[idx][0]
+
+    def get_targets_and_yields_by_idx(self, idx):
+        return self._products[idx][1]['targets'], self._products[idx][1]['yields']
 
     def add_type(self, type_, br, targets, yields_=None, add_secondaries=True):
         # Adds data for the type; this function adds the secondary
@@ -463,13 +467,32 @@ class DecayData(object):
         if add_secondaries:
             if type_ in _DECAY_SECONDARY_PARTICLES:
                 s_data = _DECAY_SECONDARY_PARTICLES[type_]
-
                 for s_yield, s_target in s_data:
                     yields__.append(s_yield)
                     targets_.append(s_target)
 
         # Build our product
-        self._products[type_] = (br, targets_, yields__)
+        self._product_types = self._product_types + (type_,)
+        # Since targets and yields are of same length, convert to a numpy
+        # structured array
+        targets_yields = np.array(
+            [(t, y) for t, y in zip(targets_, yields__)],
+            dtype=NP_DTYPE_TARGET_YIELDS)
+        self._products = self._products + ((br, targets_yields),)
+
+    def update_type(self, type_, br, targets_yields):
+            # Updated an entry for a reaction channel with already formulated data
+            # This method does not check correctness of values as these likely have
+            # been modified from already existing data
+        idx = self.get_type_index(type_)
+        if idx is None:
+            # Then this doesnt exist, so just add it
+            self._product_types = self._product_types + (type_,)
+            self._products = self._products + ((br, targets_yields),)
+        else:
+            product_data = self._products
+            self._products = product_data[:idx] + \
+                ((br, targets_yields),) + product_data[idx + 1:]
 
     def to_hdf5(self, group):
         """Writes the DecayData to an opened HDF5 group.
@@ -485,33 +508,32 @@ class DecayData(object):
             group.attrs["half_life"] = "None"
         else:
             group.attrs["half_life"] = self.half_life
-        group.attrs["half_life_units"] = np.string_(self.half_life_units)
+        group.attrs["half_life_units"] = np.bytes_(self.half_life_units)
         group.attrs["decay_energy"] = self.decay_energy
 
         # Now we have to write the products, they get their own group
-        for type_, values in self._products.items():
+        for idx, type_ in enumerate(self._product_types):
+            values = self.get_product_data_by_idx(idx)
             # ec/beta+ (and in future? others) have a slash, which
             # can confuse hdf5 as it may look like a group path
             # so lets intercept and convert to a double underscore
             # which we will fix on re-read
             t_group = group.create_group(type_.replace("/", "__"))
-            br, targets, yields_ = values
+            br, targets_yields = values
             t_group.attrs["branching_ratio"] = br
-            t_group.create_dataset("targets",
-                                   data=np.array([np.string_(t)
-                                                  for t in targets]))
-            t_group.create_dataset("yields", data=np.array(yields_))
+            targets = np.array(targets_yields['targets'], dtype=np.bytes_)
+            yields_ = targets_yields['yields']
+            t_group.create_dataset("targets", data=targets)
+            t_group.create_dataset("yields", data=yields_)
 
     @classmethod
-    def from_hdf5(cls, group, name):
+    def from_hdf5(cls, group):
         """Initializes a DecayData object from an opened HDF5 group
 
         Parameters
         ----------
         group : h5py.Group
             HDF5 group to read from
-        name : str
-            Isotope name
 
         Returns
         -------
@@ -544,96 +566,92 @@ class DecayData(object):
 
 
 class ReactionData(object):
-    """Flux-induced reaction information for an isotope.
+    """This class contains flux-induced reaction information for an isotope.
 
-    Reaction products are accessed via dictionary-like interface where
-    the key is the reaction type (e.g., "(n,alpha)") and the
-    corresponding value is a 4-tuple of an np.ndarray of the
-    group-wise cross sections, a list of the target isotopes (including
-    secondary products like He4 for an (n,alpha) reaction type), the
-    yield of each of these targets, and the Q-value of the reaction
-    in units of MeV.
-
-    Parameters
-    ----------
-    xs_units : {"b", "cm2"}
-        The units of the cross section
-    num_groups : int
-        The number of energy groups the data is present in
-
-    Attributes
-    ----------
-    xs_units : {"b", "cm2"}
-        The units of the cross section
-    num_groups : int
-        The number of energy groups the data is present in
-    products : dict of (branching_ratio, List of GND targets, List of yields)
-        Keyed by the type of interaction
+    Reaction product information (Q-value of the reaction [MeV], group-wise
+    cross sections [b], targets, and yields) are accessed via are accessed via
+    class interface functions.
     """
+    __slots__ = ['_product_types', '_products', '_product_qs']
 
-    def __init__(self, xs_units, num_groups):
-        self.xs_units = xs_units
-        self.num_groups = num_groups
-        self._products = {}
+    def __deepcopy__(self, memo):
+        # Since we defined getstate, we need to make our own custom deepcopy
+        # for when we clone a depletion library
+        that = ReactionData()
+        # Our product_types and qs will not change with clones (as all that
+        # changes are the xs values), so lets assign references for everything
+        # but the products data
+        that._product_types = self._product_types
+        that._product_qs = self._product_qs
+        that._products = deepcopy(self._products)
+        return that
 
-    @property
-    def xs_units(self):
-        return self._xs_units
+    def __init__(self):
+        self._product_types = tuple()
+        self._products = tuple()
+        self._product_qs = tuple()
 
-    @xs_units.setter
-    def xs_units(self, xs_units):
-        check_value("xs_units", xs_units, _RXN_UNITS)
-        self._xs_units = xs_units
+    def get_type_by_idx(self, idx):
+        return self._product_types[idx]
 
-    @property
-    def num_groups(self):
-        return self._num_groups
+    def get_type_index(self, type_):
+        try:
+            idx = self._product_types.index(type_)
+        except ValueError:
+            return None
+        return idx
 
-    @num_groups.setter
-    def num_groups(self, num_groups):
-        check_type("num_groups", num_groups, int)
-        check_greater_than("num_groups", num_groups, 0)
-        self._num_groups = num_groups
+    def get_product_data_by_idx(self, idx):
+        return *self._products[idx], self._product_qs[idx]
+
+    def get_product_data_by_type(self, type_):
+        try:
+            idx = self._product_types.index(type_)
+        except ValueError:
+            return None
+        return *self._products[idx], self._product_qs[idx]
+
+    def get_xs_by_idx(self, idx):
+        return self._products[idx][0]
+
+    def get_targets_and_yields_by_idx(self, idx):
+        return self._products[idx][1]['targets'], self._products[idx][1]['yields']
+
+    def get_Q_by_idx(self, idx):
+        return self._product_qs[idx]
+
+    def __contains__(self, type_):
+        return type_ in self._product_types
 
     @property
     def num_types(self):
-        return len(self._products)
+        return len(self._product_types)
 
     @property
     def total_xs(self):
-        tot_rem_xs = np.zeros(self._num_groups)
+        # We dont know the number of groups until we have a xs structure, so
+        # lets hold off on initializing tot_rem_xs until we get our 1st xs
+        tot_rem_xs = None
         for type_ in _RXN_TOTAL_TYPES:
-            if type_ in self._products:
-                xs, _, _, _ = self._products[type_]
-                tot_rem_xs += xs
+            idx = self.get_type_index(type_)
+            if idx is not None:
+                xs = self.get_xs_by_idx(idx)
+                if tot_rem_xs is None:
+                    # Now we have our xs structure so lets initialize and set
+                    tot_rem_xs = np.copy(xs)
+                else:
+                    tot_rem_xs += xs
+        # Note that if we have none of _RXN_TOTAL_TYPES in our data channels,
+        # then tot_rem_xs will be None. Would be nice to allocate as 0, but
+        # then we need to store the number of groups on this class, wasting
+        # precious memory. Instead, return the None and let upstream handle it
         return tot_rem_xs
-
-    def __contains__(self, type_):
-        return type_ in self._products
-
-    def __iter__(self):
-        return iter(self._products.values())
-
-    def __getitem__(self, type_):
-        if type_ in self._products:
-            return self._products[type_]
-        else:
-            return None
-
-    def keys(self):
-        return iter(self._products.keys())
-
-    def items(self):
-        return iter(self._products.items())
-
-    def values(self):
-        return iter(self._products.values())
 
     def add_type(self, type_, xs_units, xs, targets=None, yields_=None,
                  add_secondaries=True, q_value=0.):
         # Adds data for the type; this function adds the secondary
         # particles for the user
-        if type_ in self._products:
+        if type_ in self:
             msg = "XS type {} already exists in the data!".format(type_)
             raise ValueError(msg)
 
@@ -645,7 +663,6 @@ class ReactionData(object):
         check_iterable_type("xs", xs, (float, np.float64))
         for xs_val in xs:
             check_greater_than("xs value", xs_val, 0., equality=True)
-        check_length("xs", xs, self._num_groups)
         if type_ == "fission" and targets is None:
             targets_ = ["fission"]
         elif isinstance(targets, str):
@@ -678,46 +695,89 @@ class ReactionData(object):
                     yields__.append(s_yield)
                     targets_.append(s_target)
 
-        # Convert xs units
-        if self._xs_units != xs_units:
-            if xs_units == "b":
-                # Then self.xs_units is cm2 and we need to be consistent
-                # with that
-                xs = np.copy(np.asarray(xs)) * 1.E-24
-            elif xs_units == "cm2":
-                # Then self.xs_units is b and we need to be consistent
-                # with that
-                xs = np.copy(np.asarray(xs)) * 1.E24
-        else:
+        # Convert xs units if needed
+        if xs_units == "b":
             xs = np.array(xs)
+        elif xs_units == "cm2":
+            xs = np.array(xs) * 1.E24
 
         # Build our product
-        self._products[type_] = (xs, targets_, yields__, q_value)
+        endf_type, _ = endf_rx_type(type_, targets_, yields__) 
+        self._product_types = self._product_types + (endf_type,)
+        # Since targets and yields are of same length, convert to a numpy
+        # structured array
+        targets_yields = np.array(
+            [(t, y) for t, y in zip(targets_, yields__)],
+            dtype=NP_DTYPE_TARGET_YIELDS)
+        self._products = self._products + ((xs, targets_yields),)
+        self._product_qs = self._product_qs + (q_value,)
+
+    def update_type(self, type_, xs, targets_yields, q_value):
+        # Updated an entry for a reaction channel with already formulated data
+        # This method does not check correctness of values as these likely have
+        # been modified from already existing data
+        idx = self._product_types.index(type_)
+        if idx is None:
+            # Then this doesnt exist, so just add it
+            self._product_types = self._product_types + (type_,)
+            self._products = self._products + ((xs, targets_yields),)
+            self._product_qs = self._product_qs + (q_value,)
+        else:
+            product_data = self._products
+            self._products = product_data[:idx] + \
+                ((xs, targets_yields),) + product_data[idx + 1:]
+            product_qs = self._product_qs
+            self._product_qs = product_qs[:idx] + \
+                (q_value,) + product_qs[idx + 1:]
 
     def get_xs(self, type_, output_units, meta_state=0):
         # Finds the cross section to a desired metastable state in the
         # requested units
-        if self._xs_units == output_units:
-            conv_const = 1.
-        elif output_units == "b":
-            conv_const = 1.E24
+        if output_units == "b":
+            conv_const = 1.0
         elif output_units == "cm2":
             conv_const = 1.E-24
 
-        if type_ in self._products:
-            xs, targets, yields_, _ = self._products[type_]
-            for t, target in enumerate(targets):
+        idx = self.get_type_index(type_)
+        if idx is not None:
+            xs, target_yields = self._products[idx]
+            for ty in target_yields:
+                target = ty['targets']
+                yield_ = ty['yields']
                 if target != "fission":
                     _, _, m = adder.data.zam(target)
                     if m == meta_state:
-                        return xs * yields_[t] * conv_const
+                        return xs * yield_ * conv_const
                 else:
-                    return xs * yields_[t] * conv_const
+                    return xs * yield_ * conv_const
             # If we get here, we didnt find it
             return None
-
         else:
             return None
+
+    def equivalent_rx_type(self, main_rx_type):
+        """Provides reaction type that is equivalent to main_rx_type.
+
+        This method uses the endf_rx_type method to get alternative reaction
+        rate identifiers, that are equivalent to main_rx_type, e.g., (n,a) for
+        Li-6(n,t)
+
+        Parameters
+        ----------
+        main_rx_type : string
+            Reaction type, e.g., (n,a)
+        """
+        alt_types = []
+        for type_ in self._product_types:
+            if not main_rx_type == type_:
+                product_data = self.get_product_data_by_type(type_)
+                targets = [data[0] for data in product_data[1]]
+                yields_ = [data[1] for data in product_data[1]]
+                _, alt_rxs = endf_rx_type(type_, targets, yields_) 
+                if main_rx_type in alt_rxs:
+                    alt_types.append(type_)
+
+        return alt_types
 
     def to_hdf5(self, group):
         """Writes the ReactionData to an opened HDF5 group.
@@ -729,30 +789,27 @@ class ReactionData(object):
 
         """
 
-        group.attrs["xs_units"] = np.string_(self._xs_units)
-        group.attrs["num_groups"] = self._num_groups
+        group.attrs["xs_units"] = np.bytes_('b')
 
         # Now we have to write the products, they get their own group
-        for type_, values in self._products.items():
+        for idx, type_ in enumerate(self._product_types):
+            xs, targets_yields, q_value = self.get_product_data_by_idx(idx)
             t_group = group.create_group(type_)
-            xs, targets, yields_, q_value = values
             t_group.create_dataset("xs", data=xs)
-            t_group.create_dataset("targets",
-                                   data=np.array([np.string_(t)
-                                                  for t in targets]))
-            t_group.create_dataset("yields", data=np.array(yields_))
+            targets = np.array(targets_yields['targets'], dtype=np.bytes_)
+            yields_ = targets_yields['yields']
+            t_group.create_dataset("targets", data=targets)
+            t_group.create_dataset("yields", data=yields_)
             t_group.attrs["q_value"] = q_value
 
     @classmethod
-    def from_hdf5(cls, group, name):
+    def from_hdf5(cls, group):
         """Initializes a ReactionData object from an opened HDF5 group
 
         Parameters
         ----------
         group : h5py.Group
             HDF5 group to read from
-        name : str
-            Isotope name
 
         Returns
         -------
@@ -760,10 +817,9 @@ class ReactionData(object):
             A ReactionData object initialized from HDF5
         """
         xs_units = group.attrs["xs_units"].decode()
-        num_groups = int(group.attrs["num_groups"])
 
         # Initialize the object
-        this = cls(xs_units, num_groups)
+        this = cls()
 
         # Now get the products' data
         for type_ in group.keys():
@@ -784,35 +840,45 @@ class YieldData(object):
     transition to another isotope via complex outgoing distributions
     such as fission.
 
+    This class behaves like a dictionary where the keys are isotopes and the
+    fission product yields are the values.
+
     """
+    __slots__ = ['_isos', '_yields']
 
     def __init__(self):
-        self._products = {}
+        self._isos = tuple()
+        # We use a np array here because it is more compact than an array.array
+        # somehow for longer arrays (each indiv item is smaller but it has
+        # more overhead than array.array) Since this is a large array, np.array
+        # ends up being more compact
+        self._yields = np.array([], dtype=np.double)
 
     @property
     def num_isotopes(self):
-        return len(self._products)
+        return len(self._isos)
 
     def __contains__(self, iso):
-        return iso in self._products
+        return iso in self._isos
 
     def __getitem__(self, iso):
-        if iso in self._products:
-            return self._products[iso]
-        else:
+        try:
+            idx = self._isos.index(iso)
+            return self._yields[idx]
+        except ValueError:
             return None
 
     def __iter__(self):
-        return iter(self._products.values())
+        return iter(self._yields)
 
     def keys(self):
-        return iter(self._products.keys())
+        return iter(self._isos)
 
     def items(self):
-        return iter(self._products.items())
+        return zip(self._isos, self._yields)
 
     def values(self):
-        return iter(self._products.values())
+        return iter(self._yields)
 
     def add_isotope(self, iso, yield_):
         """Adds an isotope to the YieldData object
@@ -820,7 +886,9 @@ class YieldData(object):
 
         check_type("iso", iso, str)
         check_type("yield_", yield_, (float, np.float64))
-        self._products[iso] = yield_
+
+        self._isos = self._isos + (iso,)
+        self._yields = np.append(self._yields, yield_)
 
     def to_hdf5(self, group):
         """Writes the TransitionData to an opened HDF5 group.
@@ -831,31 +899,23 @@ class YieldData(object):
             HDF5 group to write to
 
         """
-
-        isos = np.array([np.string_(k) for k in self._products.keys()])
-        yields_ = np.array([v for v in self._products.values()])
-
-        # And now we can write them
-        group.create_dataset("isotopes", data=isos)
-        group.create_dataset("yields", data=yields_)
+        group.create_dataset("isotopes",
+            data=np.array([np.bytes_(iso) for iso in self._isos]))
+        group.create_dataset("yields", data=self._yields)
 
     @classmethod
-    def from_hdf5(cls, group, name, num_groups=None):
-        """Initializes a TransitionData object from an opened HDF5 group
+    def from_hdf5(cls, group):
+        """Initializes a YieldData object from an opened HDF5 group
 
         Parameters
         ----------
         group : h5py.Group
             HDF5 group to read from
-        name : str
-            Isotope name
-        num_groups : int, optional
-            The number fo groups in the library; defaults to None.
 
         Returns
         -------
-        this : TransitionData
-            A TransitionData subclass object initialized from HDF5
+        this : YieldData
+            A YieldData object initialized from HDF5
         """
 
         this = cls()
@@ -868,8 +928,8 @@ class YieldData(object):
         if len(isotopes) != len(yields_):
             raise ValueError("'isotopes' and 'yields' must have same size!")
 
-        for i in range(len(isotopes)):
-            this._products[isotopes[i]] = yields_[i]
+        this._isos = tuple(isotopes)
+        this._yields = np.array(yields_, dtype=np.double)
         return this
 
 
@@ -914,16 +974,22 @@ class DepletionLibrary(object):
     num_neutron_groups : int
         The number of groups used for incident neutron data
     """
+    __slots__ = ['_name', '_neutron_group_structure', '_num_neutron_groups',
+                 'isotopes', '_isotopes_ordered', 'isotope_indices',
+                 'inverse_isotope_indices', 'initial_isotopes',
+                 'atomic_mass_vector']
 
     def __init__(self, name, neutron_group_structure):
         self.name = name
         self.neutron_group_structure = neutron_group_structure
+        self.num_neutron_groups = len(self._neutron_group_structure) - 1
         # Initialize data structs relied on when data is populated
-        self.isotopes = OrderedDict()
+        self.isotopes = {}
         self._isotopes_ordered = False
-        self.isotope_indices = OrderedDict()
-        self.inverse_isotope_indices = OrderedDict()
+        self.isotope_indices = {}
+        self.inverse_isotope_indices = {}
         self.initial_isotopes = set()
+        self.atomic_mass_vector = None
 
     @property
     def name(self):
@@ -946,7 +1012,12 @@ class DepletionLibrary(object):
 
     @property
     def num_neutron_groups(self):
-        return len(self._neutron_group_structure) - 1
+        return self._num_neutron_groups
+
+    @num_neutron_groups.setter
+    def num_neutron_groups(self, num_groups):
+        check_type("num_neutron_groups", num_groups, int)
+        self._num_neutron_groups = num_groups
 
     @property
     def num_isotopes(self):
@@ -954,6 +1025,17 @@ class DepletionLibrary(object):
 
     def __repr__(self):
         return "<DepletionLibrary: {}>".format(self.name)
+
+    def __deepcopy__(self, memo):
+        new_instance = type(self)(self._name, self._neutron_group_structure)
+        state = {attr: getattr(self, attr) for attr in self.__slots__
+                 if attr != 'isotopes'}
+        for attr, value in state.items():
+            setattr(new_instance, attr, deepcopy(value))
+        # isotopes knows how to make copies of itself to save space, so lets
+        # let its __deepcopy__ method handle that.
+        new_instance.isotopes = deepcopy(self.isotopes)
+        return new_instance
 
     def clone(self, new_name=None):
         """Create a clone of this library, assigning a new name if
@@ -1006,8 +1088,9 @@ class DepletionLibrary(object):
                 if c_name != "fission" and c_name not in self.isotope_indices:
                     if c_val > 0.:
                         # Find the first relevant decay and add to msg
-                        for type_ in decay.keys():
-                            _, targets, _ = decay[type_]
+                        for idx, type_ in enumerate(decay._product_types):
+                            targets, _ = \
+                                decay.get_targets_and_yields_by_idx(idx)
                             if c_name in targets:
                                 msgs.append(msg_template.format(c_name, name,
                                                                 c_name, type_))
@@ -1028,8 +1111,9 @@ class DepletionLibrary(object):
                 if c_name != "fission" and c_name not in self.isotope_indices:
                     if c_val > 0.:
                         # Find the first relevant decay and add to msg
-                        for type_ in n_xs.keys():
-                            _, targets, _, _ = n_xs[type_]
+                        for idx, type_ in enumerate(n_xs._product_types):
+                            targets, _ = \
+                                n_xs.get_targets_and_yields_by_idx(idx)
                             if c_name in targets:
                                 msgs.append(msg_template.format(c_name, name,
                                                                 c_name, type_))
@@ -1039,7 +1123,7 @@ class DepletionLibrary(object):
 
         # Now add the isotopes to the library
         stable = DecayData(None, "s", 0.)
-        noxs = ReactionData("b", self.num_neutron_groups)
+        noxs = ReactionData()
         for iso in isos_to_add:
             self.add_isotope(iso, xs=noxs, decay=stable)
         if len(isos_to_add) > 0:
@@ -1088,21 +1172,23 @@ class DepletionLibrary(object):
         for src, lambda_ in zip([decay, rem], [decay_lambda_, rem_lambda_]):
             if src is None:
                 continue
-            for child, (br, targets, yields_) in src.items():
+            for idx, child in enumerate(src._product_types):
+                br, targets_yields = src.get_product_data_by_idx(idx)
                 if br <= 0.:
                     continue
                 # Get the value to be multiplied by the yields
                 # (lambda * branch ratio)
                 rxn_val = lambda_ * br
 
-                for t, target in enumerate(targets):
+                for ty in targets_yields:
+                    target = ty['targets']
+                    yield_ = ty['yields']
                     # Handle the fission reaction
-                    rxn_yield = rxn_val * yields_[t]
+                    rxn_yield = rxn_val * yield_
                     if child in fission_keys:
                         for fission_child, fission_yield in nfy.items():
                             child_names.append(fission_child)
                             child_values.append(rxn_yield * fission_yield)
-
                     else:
                         # The direct product is simpler
                         child_names.append(target)
@@ -1144,23 +1230,22 @@ class DepletionLibrary(object):
         fission_keys = ["fission"]
 
         # unit conversion constant
-        if src.xs_units == output_unit:
+        if output_unit == "cm2":
+            conversion = 1.E-24
+        elif output_unit == "b":
             conversion = 1.0
-        else:
-            if output_unit == "cm2":
-                conversion = 1.E-24
-            elif output_unit == "b":
-                conversion = 1.E24
 
         # Gather the target information
-        for _, (xs, targets, yields_, _) in src.items():
+        for idx in range(len(src._product_types)):
+            xs = src.get_xs_by_idx(idx)
+            targets, yields = src.get_targets_and_yields_by_idx(idx)
             # Check to see if the xs is 0 over all groups
             if not np.any(xs):
                 continue
             rxn_val = np.dot(xs, flux) * conversion
-            for t, target in enumerate(targets):
+            for target, yield_ in zip(targets, yields):
                 # Handle the fission reaction
-                rxn_yield = rxn_val * yields_[t]
+                rxn_yield = rxn_val * yield_
                 if target in fission_keys:
                     for fission_child, fission_yield in nfy.items():
                         child_names.append(fission_child)
@@ -1177,7 +1262,7 @@ class DepletionLibrary(object):
         # we want the highest nucid to be first
         # GND_to_origen_nucid
         # Reset the isotope indices map
-        self.isotope_indices = OrderedDict()
+        self.isotope_indices = {}
 
         # We need an array of iso names and an array of nucids
         # We then sort by nucids and rearrange iso names accordingly
@@ -1205,7 +1290,7 @@ class DepletionLibrary(object):
         sorted_indices = nucids.argsort()
 
         # Now store our map and its inverse
-        self.inverse_isotope_indices = OrderedDict()
+        self.inverse_isotope_indices = {}
         for i, key in enumerate(iso_names[sorted_indices]):
             self.isotope_indices[key] = i
             self.inverse_isotope_indices[i] = key
@@ -1247,7 +1332,7 @@ class DepletionLibrary(object):
             # Get the total removal and place in the diagonal
             lambda_removal = \
                 self.isotopes[name].get_total_decay_const(time_units,
-                                                            "all")
+                                                          "all")
 
             if lambda_removal is None:
                 continue
@@ -1268,18 +1353,17 @@ class DepletionLibrary(object):
 
         return D
 
-    def build_depletion_matrix(self, flux, matrix_format="csr",
-        dk_matrix=None):
+    def build_depletion_matrix(self, flux, dk_matrix, matrix_format="csr"):
         """Build the A matrix used for depletion from the library info
 
         Parameters
         ----------
         flux : np.ndarray
             The group-wise flux to use.
+        dk_matrix : scipy.sparse array
+            The pre-computed decay matrix
         matrix_format : {"csr", "csc", "dense"}, optional
             The matrix format to keep the matrix in; defaults to "csr"
-        dk_matrix : None or np.ndarray
-            The pre-computed decay matrix, if available
 
         Returns
         -------
@@ -1291,27 +1375,25 @@ class DepletionLibrary(object):
         check_length("flux", flux, length_min=self.num_neutron_groups)
         check_value("matrix_format", matrix_format, ("csr", "csc", "dense"))
 
-        # Make sure the decay matrix is calculated
-        if dk_matrix is None:
-            decay_matrix = self.build_decay_matrix()
-        else:
-            if sp.issparse(dk_matrix):
-                decay_matrix = dk_matrix.todense()
-            else:
-                decay_matrix = dk_matrix
-
         # Now we can move on to building A; start by using decay matrix
-        A = np.copy(decay_matrix)
+        coo_decay = dk_matrix.tocoo(copy=True)
+        # Create the data that we eventually want to put into this matrix
+        rows = coo_decay.row.tolist()
+        cols = coo_decay.col.tolist()
+        values = coo_decay.data.tolist()
         # Now we go in and add the components
         for name, i in self.isotope_indices.items():
             iso = self.isotopes[name]
             # First the diagonal (transmute from i to any other)
             xs = iso.get_total_removal_xs("cm2")
             if xs is None:
+                # Then there is no channel (0 value xs)
                 continue
             else:
                 val = np.dot(xs, flux)
-            A[i, i] -= val
+            values.append(-val)
+            rows.append(i)
+            cols.append(i)
 
             # Now get the children of this isotope and place in the
             # appropriate locations
@@ -1321,9 +1403,16 @@ class DepletionLibrary(object):
             # Now progress through each of these children, find
             # their index, and accrue the transmutation value
             for c_name, c_val in zip(child_names, child_values):
-                if c_name in self.isotope_indices:
+                try:
                     j = self.isotope_indices[c_name]
-                    A[j, i] += c_val
+                except KeyError:
+                    pass
+                values.append(c_val)
+                rows.append(j)
+                cols.append(i)
+
+        A = sp.coo_matrix((values, (rows, cols)), shape=dk_matrix.shape)
+        A.sum_duplicates()
 
         if matrix_format == "csr":
             A_in_format = sp.csr_matrix(A, dtype=np.float64)
@@ -1365,14 +1454,20 @@ class DepletionLibrary(object):
                 msg = "{} already in exists in Isotopes!".format(iso_name)
                 raise ValueError(msg)
 
-            # Work the specific datatypes
-            if xs:
-                # Check that the groups are consistent with expectations
-                if xs.num_groups != self.num_neutron_groups:
-                    msg = "xs groups and DepletionLibrary groups do not match!"
-                    raise ValueError(msg)
+            is_isotope = adder.data.is_isotope(iso_name)
 
-            isotope = IsotopeData(iso_name)
+            if is_isotope:
+                # Set the atomic mass
+                atomic_mass = adder.data.atomic_mass(iso_name)
+                if atomic_mass is None:
+                    # Then this isotope is not present in the source data
+                    # for the atomic mass info (could be a pseudo-nuc)
+                    # if so, use the value of A
+                    _, a, _ = adder.data.zam(iso_name)
+                    atomic_mass = float(a)
+            else:
+                atomic_mass = 1.
+            isotope = IsotopeData(atomic_mass)
             if xs:
                 isotope.neutron_xs = xs
             if nfy:
@@ -1410,18 +1505,21 @@ class DepletionLibrary(object):
         if rxn_type == "absorb":
             # First we add up the straightforward absorption channels
             for type_ in _RXN_ABSORB_TYPES:
-                if type_ in iso_xs.keys():
-                    xs, _, _, _ = iso_xs[type_]
+                idx = iso_xs.get_type_index(type_)
+                if idx is not None:
+                    xs = iso_xs.get_xs_by_idx(idx)
                     micro_xs += xs
 
             # And now we take away the multiplicity part
             # e.g., if (n,Xn) we subtract (X - 1) * sig_(n,2n)
             # where it is (X - 1) to account for the replacement of the
             # incident neutron with one of the outgoing neutrons
-            for type_, X in _RXN_NEUTRON_MULTIPLICITES.items():
-                if type_ in iso_xs.keys() and type_ != "fission" and X > 0.:
-                    xs, _, _, _ = iso_xs[type_]
-                    micro_xs -= (X - 1.) * xs
+            for type_, X in _RXN_NEUTRON_MULTIPLICITIES.items():
+                if type_ != 'fission' and X > 0.:
+                    idx = iso_xs.get_type_index(type_)
+                    if idx is not None:
+                        xs = iso_xs.get_xs_by_idx(idx)
+                        micro_xs -= (X - 1.) * xs
         elif rxn_type == "nu-fission":
             # nu-fission is only used for determining important isotopes
             # the fission multiplicities includes a value of 2.43.
@@ -1430,9 +1528,10 @@ class DepletionLibrary(object):
             # and so it would need to be provided from elsewhere; until
             # I have that capability incorporated this constant is used
             for type_ in _RXN_FISSION_TYPES:
-                if type_ in iso_xs.keys():
-                    xs, _, _, _ = iso_xs[type_]
-                    micro_xs += _RXN_NEUTRON_MULTIPLICITES[type_] * xs
+                idx = iso_xs.get_type_index(type_)
+                if idx is not None:
+                    xs = iso_xs.get_xs_by_idx(idx)
+                    micro_xs += _RXN_NEUTRON_MULTIPLICITIES[type_] * xs
         else:
             if rxn_type == "total":
                 types = _RXN_TOTAL_TYPES
@@ -1441,8 +1540,9 @@ class DepletionLibrary(object):
             else:
                 types = [rxn_type]
             for type_ in types:
-                if type_ in iso_xs.keys():
-                    xs, _, _, _ = iso_xs[type_]
+                idx = iso_xs.get_type_index(type_)
+                if idx is not None:
+                    xs = iso_xs.get_xs_by_idx(idx)
                     micro_xs += xs
 
         return micro_xs
@@ -1489,7 +1589,7 @@ class DepletionLibrary(object):
 
         check_iterable_type("flux", flux, float)
         check_length("flux", flux, self.num_neutron_groups)
-        arr_flux = np.asfarray(flux)
+        arr_flux = np.asarray(flux, dtype=float)
 
         if iso_name in self.isotopes:
             mg_xs = self.get_micro_neutron_xs(iso_name, rxn_type)
@@ -1535,7 +1635,7 @@ class DepletionLibrary(object):
 
         check_iterable_type("flux", flux, float)
         check_length("flux", flux, self.num_neutron_groups)
-        arr_flux = np.asfarray(flux)
+        arr_flux = np.asarray(flux, dtype=float)
 
         mg_xs = self.get_macro_neutron_xs(iso_names, iso_concentrations,
                                           rxn_type)
@@ -1630,7 +1730,6 @@ class DepletionLibrary(object):
                 check_iterable_type("flux", flux, float)
                 check_length("flux", flux, self.num_neutron_groups)
                 raise NotImplementedError("This has not yet been implemented")
-                # arr_flux = np.asfarray(flux)
         else:
             iso_Q = 0.
 
@@ -1669,7 +1768,7 @@ class DepletionLibrary(object):
                                    VERSION_DEPLETION_LIBRARY)
         else:
             # Then we have to write the file status.
-            root.attrs['filetype'] = np.string_(FILETYPE_DEPLETION_LIBRARY)
+            root.attrs['filetype'] = np.bytes_(FILETYPE_DEPLETION_LIBRARY)
             root.attrs['version'] = [VERSION_DEPLETION_LIBRARY, 0]
 
         # Create the group for this object
@@ -1801,9 +1900,9 @@ class DepletionLibrary(object):
         # Open and operate on the file data
         # Do the cross section data first
         lib_name = None
-        xs_data = OrderedDict()
-        decay_data = OrderedDict()
-        yield_data = OrderedDict()
+        xs_data = {}
+        decay_data = {}
+        yield_data = {}
         for library_type in ["xs", "decay"]:
             if library_type == "xs":
                 filename = xs_filename
@@ -1977,7 +2076,7 @@ class DepletionLibrary(object):
 
         # Convert the data for each isotope into our TransitionData format
         # Start with the decay data
-        iso_decay = OrderedDict()
+        iso_decay = {}
         iso_decay_types = {}
         has_fission = set()
         for iso_name in decay_data:
@@ -2069,11 +2168,11 @@ class DepletionLibrary(object):
                 iso_decay_types[iso_name] = data['isotope_types']
 
         # Repeat for xs
-        iso_xs = OrderedDict()
+        iso_xs = {}
         iso_xs_types = {}
         for iso_name in xs_data:
             # Create the object
-            that = ReactionData(xs_units, num_groups=1)
+            that = ReactionData()
 
             # Get the library data
             data = xs_data[iso_name]
@@ -2223,3 +2322,76 @@ def GND_to_origen_nucid(iso_name):
         # Shift these high to be above the real nuclides
         origen_nucid = 10000 * Z + 10 * A + M + 10000000
     return origen_nucid
+
+def endf_rx_type(rx_type, targets, yields):
+    """This method returns a reaction type e.g., (n,t), consistent with the
+    ENDF notation, in which the lightest product is included in parentheses.
+
+    Parameters
+    ----------
+    rx_type : str
+        The reaction type for which the equivalent ENDF type is looked
+    targets : iterable of str 
+        Isotopes that are produced by the reaction (e.g., 'Li6') 
+    yields  : iterable of float
+        Number of targets that are produced per reaction 
+
+    Returns
+    ----------
+    endf_type : str 
+        Equivalent reaction type consistent with the ENDF notation. If the 
+        rx_type is already consistent with the ENDF notation, endf_type is 
+        identical.
+    alternatives : list of str
+        Provides all of the reaction types that are equivalent and alternative
+        to the rx_type provided as an argument, including reactions that have
+        no targets other than the reaction's secondary particles as per dict
+        _RXN_SECONDARY_PARTICLES.
+    """
+
+    # Converts the reaction type to be consistent with ENDF libraries
+    # e.g., Li6(n,a)H3 is actually Li6(n,t)He4; with the lighter product in 
+    # parentheses
+    alternatives = []
+    endf_type = rx_type 
+
+    if targets and yields and endf_type in _RXN_SECONDARY_PARTICLES:
+        
+        # Determine a list of expected secondary particles for rx_type
+        rx_products = []
+        for target, yieldx in zip(targets, yields):
+            # Add target and yields from the HDF5 library
+            rx_products.append((yieldx, target))
+            
+        # Cycle through alternative reaction types from dictionary 
+        for alt_type in _RXN_SECONDARY_PARTICLES:
+            alt_products = _RXN_SECONDARY_PARTICLES[alt_type]
+
+            # Check whether the products from the library for the alternative 
+            # type are all also be in the ORIGEN products list. Also, neutron 
+            # multiplicities are checked
+            if (set(alt_products).issubset(set(rx_products)) and (
+                    _RXN_NEUTRON_MULTIPLICITIES[alt_type] == 
+                    _RXN_NEUTRON_MULTIPLICITIES[endf_type] 
+               )):
+                # These are the same reaction
+                if not alt_type == rx_type:
+                    # The alt_type does not coincide with rx_type
+                    # i,e., it is a true alternative
+                    alternatives.append(alt_type)
+                    rx_A = [adder.data.zam(x[1])[1] for x in 
+                                    _RXN_SECONDARY_PARTICLES[endf_type]]
+                    alt_A = [adder.data.zam(x[1])[1] for x in 
+                                    _RXN_SECONDARY_PARTICLES[alt_type]]
+
+                    if min(alt_A) <= min(rx_A):
+                        if ( ( min(alt_A) < min(rx_A) ) or (
+                            len(_RXN_SECONDARY_PARTICLES[alt_type]) < 
+                            len(_RXN_SECONDARY_PARTICLES[endf_type]) 
+                        )):
+                            # The alternative type has a smaller product identifier
+                            # and - as such - it follows the ENDF convention
+                            endf_type = alt_type 
+
+    return endf_type, alternatives
+                                

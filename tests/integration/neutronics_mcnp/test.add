@@ -3,7 +3,6 @@ neutronics_solver = "MCNP"
 neutronics_exec = mcnp.EXE
 num_neutronics_threads = 2
 num_depletion_threads = 4
-depletion_chunksize = 100
 neutronics_input_file = test.inp
 neutronics_library_file = ./xsdir
 depletion_solver = ORIGEN2.2
@@ -47,6 +46,11 @@ use_depletion_library_xs = False
                 neutronics_id_start = 62
                 neutronics_id_end = 63
                 exclude_neutronics_ids = 63
+
+[tallies]
+    [[item]]
+        tally_id = 4
+        type=universe
 
 [operations]
     [[state 0]]

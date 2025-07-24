@@ -131,7 +131,7 @@ def to_origen(this, isotope_types, filepath, flux=None, start_lib_id=1,
         file.write(xs_nfy_lib)
 
 
-# TODO: When ORIGEN non-std rxns are understood, re-enable this
+# TODO: When ORIGEN non-std rxns are understood, review and re-enable this
 # def create_nonstandard_rxn_lib(this, filename, flux=None, overwrite=True):
 #     """Determine if this library contains any reactions which are not
 #     considered standard by ORIGEN2.2; if so return their number and
@@ -180,7 +180,7 @@ def to_origen(this, isotope_types, filepath, flux=None, start_lib_id=1,
 #         # Not every isotope has xs data, if it doesnt then no need
 #         # to worry
 #         if iso.neutron_xs is not None:
-#             xs_lib_rxn_types = set(iso.neutron_xs._products.keys())
+#             xs_lib_rxn_types = set(iso.neutron_xs._product_types)
 #             # Find the values in xs_lib_rxn_types not in STANDARD_RXNS
 #             non_std_rxn_types = xs_lib_rxn_types - STANDARD_RXNS
 #         else:
@@ -197,7 +197,12 @@ def to_origen(this, isotope_types, filepath, flux=None, start_lib_id=1,
 #             parent_id = GND_to_origen_nucid(iso_name)
 #             for rxn in non_std_rxn_types:
 #                 # Get children names
-#                 for type_, (xs, targets, yields, _) in iso.neutron_xs.items():
+#                 for type_ in iso.neutron_xs._product_types:
+#                     xs, targets_yields, _ = \
+#                         iso.neutron_xs.get_product_data_by_type(type_)
+#                     targets = np.array(targets_yields['targets'],
+#                                        dtype=np.string_)
+#                     yields = targets_yields['yields']
 #                     xs_val = np.dot(xs, the_flux)
 #                     for t, target in enumerate(targets):
 #                         child_id = GND_to_origen_nucid(target)
@@ -340,11 +345,11 @@ def _write_decay(this, lib_id, iso_name):
         # Then denote this as stable
         data_units = ORIGEN_TIME_UNITS["stable"]
         # Origen just uses a 0 for thalf and friends if it is a
-        # stable isotopeq
+        # stable isotope
         thalf = 0.
     else:
-        def find_state(targets, yields, find_m):
-            for i, target in enumerate(targets):
+        def find_state(target_yields, find_m):
+            for i, target in enumerate(target_yields['targets']):
                 if target == "fission":
                     return i
                 _, _, m = adder.data.zam(target)
@@ -353,10 +358,12 @@ def _write_decay(this, lib_id, iso_name):
             # if we got here we didnt find it
             return None
 
-        for type_ in data.keys():
-            br, targets, yields = data[type_]
-            t0 = find_state(targets, yields, 0)
-            t1 = find_state(targets, yields, 1)
+        for idx in range(data.num_types):
+            type_ = data.get_type_by_idx(idx)
+            br, target_yields = data.get_product_data_by_idx(idx)
+            t0 = find_state(target_yields, 0)
+            t1 = find_state(target_yields, 1)
+            yields = target_yields['yields']
 
             if type_ == "beta-":
                 if t0 is not None:
@@ -412,6 +419,14 @@ def _get_xs(lib, iso_name, xs_type, flux):
         if lib.isotopes[iso_name].neutron_xs is not None:
             xs = lib.isotopes[iso_name].neutron_xs.get_xs(type_, "b", m)
             flux_tot = np.sum(flux)
+            if xs is None:
+                alt_types = lib.isotopes[iso_name].\
+                                neutron_xs.equivalent_rx_type(type_)
+                for alt_type in alt_types:
+                    xs = lib.isotopes[iso_name]\
+                            .neutron_xs.get_xs(alt_type, "b", m)
+                    if xs is not None:
+                        break
             if xs is not None:
                 if flux_tot == 0.:
                     return_val = np.sum(xs)

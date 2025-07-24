@@ -72,7 +72,7 @@ def test_comp_init(depletion_lib):
     assert test_c._last_dt is None
     assert test_c._last_flux is None
     np.testing.assert_allclose(test_c.library.atomic_mass_vector, amu_vec)
-    np.testing.assert_allclose(test_c.decay_matrix, decay_mat)
+    np.testing.assert_allclose(test_c.decay_matrix.todense(), decay_mat)
 
     # Check the properties
     assert test_c.delta_t == (vol * density * 1000 / mass_flowrate)

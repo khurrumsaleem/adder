@@ -14,7 +14,7 @@ def test_depletion_init():
     num_threads = 20
     num_procs = 200
     order = 16
-    chunksize = 100
+    chunksize = 0
 
     # Check the type and value checks of each of the input parameters
     # Check exec_cmd
@@ -37,7 +37,7 @@ def test_depletion_init():
         test_d = CRAMDepletion(exec_cmd, num_threads,
                                num_procs, str(chunksize), order)
     with pytest.raises(ValueError):
-        test_d = CRAMDepletion(exec_cmd, num_threads, num_procs, 0, order)
+        test_d = CRAMDepletion(exec_cmd, num_threads, num_procs, -1, order)
     # Check order
     with pytest.raises(ValueError):
         test_d = CRAMDepletion(exec_cmd, num_threads, num_procs, chunksize, "16")

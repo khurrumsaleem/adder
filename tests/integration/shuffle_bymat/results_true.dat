@@ -61,11 +61,40 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
+c User tallies
+f6:n,p 42
+e6:n 1E-5 1E-3
+tm6 1 2
+c6 -.866 -.5 0 .5 .866 1
+t6 2 4
+df6 IC 40 IU 1 LIN FAC 123.4
+f34:n 11 12
+e34 1. 20
+tm34 1 2
+c34 -.866 -.5 0 .5 .866 1
+t34 2 4
+df34 IC 40 IU 1 LIN FAC 123.4
+fc54 testing
+f54:n 41
+fm54 (1. 11 (-1 103))
+e54:n 1E-5 1E-3
+tm54 1 2
+c54 -.866 -.5 0 .5 .866 1
+t54 2 4
+df54 IC 40 IU 1 LIN FAC 123.4
+fc64 flux in mat cell replaced by supply
+f64:n 42
+tm64 4 6
+e64:n 1E-5 1E-3
+c64 -.866 -.5 0 .5 .866 1
+t64 2 4
+df64 IC 40 IU 1 LIN FAC 123.4
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
+df4 IC 40 IU 1 LIN FAC 123.4
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_2_op_4_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_2_op_3_step_1
 11 21 1.5420618013560E-02 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=1
 12 22 1.2712753933619E-02 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=2
 21 11 1.1021230352758E-02 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=6
@@ -127,11 +156,46 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
+c User tallies
+f6:n,p 42
+e6:n 1E-5 1E-3
+tm6 1 2
+c6 -.866 -.5 0 .5 .866 1
+t6 2 4
+df6 IC 40 IU 1 LIN FAC 123.4
+f74:n 11 12
+e74 1. 20
+tm74 1 2
+c74 -.866 -.5 0 .5 .866 1
+t74 2 4
+df74 IC 40 IU 1 LIN FAC 123.4
+fc84 flux in mat cell replaced by supply
+f84:n 42
+tm84 4 6
+e84:n 1E-5 1E-3
+c84 -.866 -.5 0 .5 .866 1
+t84 2 4
+df84 IC 40 IU 1 LIN FAC 123.4
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
+df4 IC 40 IU 1 LIN FAC 123.4
+f34:n 21 22
+e34 1. 20
+tm34 1 2
+c34 -.866 -.5 0 .5 .866 1
+t34 2 4
+df34 IC 40 IU 1 LIN FAC 123.4
+fc54 testing
+f54:n 41
+fm54 (1. 11 (-1 103))
+e54:n 1E-5 1E-3
+tm54 1 2
+c54 -.866 -.5 0 .5 .866 1
+t54 2 4
+df54 IC 40 IU 1 LIN FAC 123.4
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_4_op_2_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_3_op_2_step_1
 11 61 6.1000000000000E+00 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=1
 12 62 6.2000000000000E+00 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=2
 21 11 1.1021230352758E-02 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=6
@@ -193,11 +257,46 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
+c User tallies
+f6:n,p 42
+e6:n 1E-5 1E-3
+tm6 1 2
+c6 -.866 -.5 0 .5 .866 1
+t6 2 4
+df6 IC 40 IU 1 LIN FAC 123.4
+f94:n 11 12
+e94 1. 20
+tm94 1 2
+c94 -.866 -.5 0 .5 .866 1
+t94 2 4
+df94 IC 40 IU 1 LIN FAC 123.4
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
+df4 IC 40 IU 1 LIN FAC 123.4
+f34:n 21 22
+e34 1. 20
+tm34 1 2
+c34 -.866 -.5 0 .5 .866 1
+t34 2 4
+df34 IC 40 IU 1 LIN FAC 123.4
+fc54 testing
+f54:n 41
+fm54 (1. 11 (-1 103))
+e54:n 1E-5 1E-3
+tm54 1 2
+c54 -.866 -.5 0 .5 .866 1
+t54 2 4
+df54 IC 40 IU 1 LIN FAC 123.4
+fc84 flux in mat cell replaced by supply
+f84:n 42
+tm84 4 6
+e84:n 1E-5 1E-3
+c84 -.866 -.5 0 .5 .866 1
+t84 2 4
+df84 IC 40 IU 1 LIN FAC 123.4
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_5_op_2_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_4_op_2_step_1
 11 61 6.1000000000000E+00 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=1
 12 62 6.2000000000000E+00 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=2
 21 11 1.1021230352758E-02 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=6
@@ -260,11 +359,45 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
+c User tallies
+f6:n,p 42
+e6:n 1E-5 1E-3
+tm6 1 2
+c6 -.866 -.5 0 .5 .866 1
+t6 2 4
+df6 IC 40 IU 1 LIN FAC 123.4
+fc104 flux in mat cell replaced by supply
+f104:n 42
+tm104 4 6
+e104:n 1E-5 1E-3
+c104 -.866 -.5 0 .5 .866 1
+t104 2 4
+df104 IC 40 IU 1 LIN FAC 123.4
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
+df4 IC 40 IU 1 LIN FAC 123.4
+f34:n 21 22
+e34 1. 20
+tm34 1 2
+c34 -.866 -.5 0 .5 .866 1
+t34 2 4
+df34 IC 40 IU 1 LIN FAC 123.4
+fc84 flux in mat cell replaced by supply
+f84:n 41
+tm84 4 6
+e84:n 1E-5 1E-3
+c84 -.866 -.5 0 .5 .866 1
+t84 2 4
+df84 IC 40 IU 1 LIN FAC 123.4
+f94:n 11 12
+e94 1. 20
+tm94 1 2
+c94 -.866 -.5 0 .5 .866 1
+t94 2 4
+df94 IC 40 IU 1 LIN FAC 123.4
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_7_op_2_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_5_op_2_step_1
 11 12 8.7795921826831E-03 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=1
 12 11 1.1021230352758E-02 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=2
 21 64 5.1000000000000E+00 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=6
@@ -327,11 +460,10 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
-FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_7_op_4_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_5_op_4_step_1
 11 62 6.2000000000000E+00 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=1
 12 11 1.1021230352758E-02 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=2
 21 64 5.1000000000000E+00 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=6
@@ -394,11 +526,10 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
-FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_8_op_2_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_6_op_2_step_1
 11 62 6.2000000000000E+00 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=9
 12 11 1.1021230352758E-02 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=10
 21 64 5.1000000000000E+00 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=10
@@ -439,13 +570,13 @@ m64 92235.70c 5.000000E-01 92238.70c 1.000000E-01 8016.70c 3.000000E-01 1001.70c
      1.000000E-01
 tr4 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.8660254037844387 0.5000000000000001 0.0
      -0.4999999999999998 0.8660254037844387 1
-tr8 0.0 0.0 0.0 0.0 -1.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 1
-tr9 0.0 0.0 0.0 0.0 0.0 -1.0 1.0 0.0 0.0 0.0 -1.0 0.0 1
-tr10 0.0 0.0 0.0 0.0 -1.0 0.0 0.0 0.0 -1.0 1.0 0.0 0.0 1
-tr12 0.0 0.0 0.0 0.7071067811865475 -0.7071067811865476 0.0 0.7071067811865476
-     0.7071067811865476 0.0 0.0 0.0 1.0 1
-tr14 0.0 0.0 0.0 0.0 -0.8660254037844387 -0.5000000000000001 1.0 0.0 0.0 0.0
-     -0.5000000000000001 0.8660254037844387 1
+tr8 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 0.0 0.0 0.0 1.0 1
+tr9 0.0 0.0 0.0 0.0 1.0 0.0 0.0 0.0 1.0 1.0 0.0 0.0 1
+tr10 0.0 0.0 0.0 0.0 0.0 -1.0 -1.0 0.0 0.0 0.0 1.0 0.0 1
+tr12 0.0 0.0 0.0 -0.7071067811865476 0.7071067811865476 0.0 -0.7071067811865476
+     -0.7071067811865475 0.0 0.0 0.0 1.0 1
+tr14 0.0 0.0 0.0 0.0 1.0 0.0 -0.8660254037844387 0.0 0.5000000000000001
+     0.5000000000000001 0.0 0.8660254037844387 1
 PRINT 60 128 130
 PRDMP 0 0 1
 kcode 100 1.00000 10 100 4500 0 6500 1
@@ -459,11 +590,10 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
-FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
 
 message: xsdir=./xsdir
 
-Simple 2x2x2 Grid, but the title is artificially long to[...] case_8_op_4_step_1
+Simple 2x2x2 Grid, but the title is artificially long to[...] case_6_op_4_step_1
 11 62 6.2000000000000E+00 10 -11 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=16
 12 11 1.1021230352758E-02 10 -11 21 -22 31 -32 vol=1000.0 u=0 imp:n=1 trcl=10
 21 64 5.1000000000000E+00 11 -12 21 -22 30 -31 vol=1000.0 u=0 imp:n=1 trcl=10
@@ -504,13 +634,13 @@ m64 92235.70c 5.000000E-01 92238.70c 1.000000E-01 8016.70c 3.000000E-01 1001.70c
      1.000000E-01
 tr4 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.8660254037844387 0.5000000000000001 0.0
      -0.4999999999999998 0.8660254037844387 1
-tr8 0.0 0.0 0.0 0.0 -1.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 1
-tr10 0.0 0.0 0.0 0.0 -1.0 0.0 0.0 0.0 -1.0 1.0 0.0 0.0 1
-tr12 0.0 0.0 0.0 0.7071067811865475 -0.7071067811865476 0.0 0.7071067811865476
-     0.7071067811865476 0.0 0.0 0.0 1.0 1
-tr14 0.0 0.0 0.0 0.0 -0.8660254037844387 -0.5000000000000001 1.0 0.0 0.0 0.0
-     -0.5000000000000001 0.8660254037844387 1
-tr16 0.0 0.0 0.0 1.0 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 1
+tr8 0.0 0.0 0.0 0.0 1.0 0.0 -1.0 0.0 0.0 0.0 0.0 1.0 1
+tr10 0.0 0.0 0.0 0.0 0.0 -1.0 -1.0 0.0 0.0 0.0 1.0 0.0 1
+tr12 0.0 0.0 0.0 -0.7071067811865476 0.7071067811865476 0.0 -0.7071067811865476
+     -0.7071067811865475 0.0 0.0 0.0 1.0 1
+tr14 0.0 0.0 0.0 0.0 1.0 0.0 -0.8660254037844387 0.0 0.5000000000000001
+     0.5000000000000001 0.0 0.8660254037844387 1
+tr16 0.0 0.0 0.0 -1.0 0.0 0.0 0.0 0.0 1.0 0.0 1.0 0.0 1
 PRINT 60 128 130
 PRDMP 0 0 1
 kcode 100 1.00000 10 100 4500 0 6500 1
@@ -524,5 +654,4 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
-FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20 TYPE=FLUX
 

@@ -94,14 +94,13 @@ class CRAMDepletion(Depletion):
                                         dtype=np.float64)
 
     def compute_library(self, depl_lib, flux):
-        """Computes and returns the total library,
-        decay + flux-induces reactions. For ORIGEN this is a lib string,
-        for CRAM this is the sparse matrix"""
+        """Computes and returns the total library, decay + flux-induces
+        reactions. This method requires that the decay
+        data already be computed via Depletion.compute_decay().
+        For ORIGEN this is a lib string, for CRAM this is the sparse matrix"""
 
-        if self.decay_data is None:
-            self.compute_decay(depl_lib)
         A_matrix = \
-                depl_lib.build_depletion_matrix(flux, "csr", self.decay_data)
+                depl_lib.build_depletion_matrix(flux, self.decay_data, "csr")
         return A_matrix
 
     def _eval_expm(self, A, n0, dt, dt_units="d"):
@@ -178,9 +177,8 @@ class CRAMDepletion(Depletion):
 
         Returns
         -------
-        new_isos : Iterable of 3-tuple (str, str, bool)
-            A list of the isotope name (str), the xs library (str), and whether
-            it is depleting (bool). There is one of these 3-tuples per isotope.
+        new_isos : np.ndarray
+            The IsotopeRegistry indices of each isotope
         new_fracs : np.ndarray
             A 1-D vector containing the depleted atom fractions for each of
             the isotopes in new_isos

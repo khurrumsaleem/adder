@@ -2,6 +2,7 @@ import math
 from collections import deque
 
 import numpy as np
+import scipy.sparse as sp
 
 from adder.depletionlibrary import DepletionLibrary, DecayData
 from adder.material import Material
@@ -374,7 +375,7 @@ class MSRSystem(object):
         self.path_offsets = \
             np.subtract(np.floor_divide(self.path_times,
                                         self.min_transport_time),
-                        1).astype(np.int)
+                        1).astype(int)
 
     def update_path_weights(self):
         # This method updates the weighting of the paths based on mass flow
@@ -643,7 +644,8 @@ class MSRSystem(object):
                 iso_xs = iso.neutron_xs
                 if iso_xs is not None:
                     # Iterate over every rxn channel
-                    for type_ in iso_xs.keys():
+                    for idx in range(iso_xs.num_types):
+                        type_ = iso_xs.get_type_by_idx(idx)
                         rxn = np.zeros(num_groups)
                         # Now get the data for each component
                         for step in path:
@@ -651,7 +653,7 @@ class MSRSystem(object):
                                 mat = materials_by_name[step.mat_name]
                                 mat_n_xs = \
                                     step.library.isotopes[iso_name].neutron_xs
-                                ref_xs = mat_n_xs._products[type_][0]
+                                ref_xs = mat_n_xs.get_xs_by_idx(idx)
                                 # All xs will be in consistent units as the
                                 # libraries will be sourced from the same lib,
                                 # so unit conversions/checks are absent here.
@@ -663,8 +665,8 @@ class MSRSystem(object):
                         # Now normalize rxn by the flux and total time
                         rxn /= (pathflux[p] * self.path_times[p])
                         # Store the xs in our path's library
-                        _, t, y, q = iso_xs[type_]
-                        iso_xs._products[type_] = (rxn, t, y, q)
+                        _, ty, q = iso_xs.get_product_data_by_idx(idx)
+                        iso_xs.update_type(type_, rxn, ty, q)
 
                 # Repeat for the decay constants. In this code we are making
                 # the pretty bulletproof assumption that the decay constants
@@ -686,7 +688,10 @@ class MSRSystem(object):
                     iso.removal.add_type("removal", 1., child)
 
         # Now create the depletion matrices
-        matrices = [lib.build_depletion_matrix(pathflux[p], matrix_format="csr")
+        decay_matrices = [sp.csr_matrix(
+            lib.build_decay_matrix()) for lib in libs]
+        matrices = [lib.build_depletion_matrix(pathflux[p], decay_matrices[p],
+                                               matrix_format="csr")
                     for p, lib in enumerate(libs)]
 
         # Create some initial information we need for all depletions

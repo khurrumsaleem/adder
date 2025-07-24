@@ -46,11 +46,14 @@ def test_simple_feed_addition():
         # Build the starting material
         num_frac = [0.5, 0.5, 0.]
         initial_isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., initial_isos, num_frac, True, "70c",
                            3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Init our MSR information so that half the time is spent
         # in core (one hour in-core, one hour ex-core)
@@ -181,11 +184,14 @@ def test_simple_feed_addition_w_tank():
         # Build the starting material
         num_frac = [0.5, 0.5, 0.]
         initial_isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., initial_isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Now initialize the msr data
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
@@ -280,7 +286,7 @@ def test_stationary():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -325,11 +331,14 @@ def test_stationary():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
             depl_libs)
@@ -411,7 +420,7 @@ def test_flowing():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -463,11 +472,14 @@ def test_flowing():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
             depl_libs)
@@ -563,7 +575,7 @@ def test_flowing_with_feed():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -623,11 +635,14 @@ def test_flowing_with_feed():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Initialize with this feed; we expect a ValueError exception
         # because of the presence of Pu
@@ -772,7 +787,7 @@ def test_fully_cp():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -825,11 +840,14 @@ def test_fully_cp():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Init our MSR information
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
@@ -938,7 +956,7 @@ def test_mix_no_delay():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -996,11 +1014,14 @@ def test_mix_no_delay():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Init our MSR information
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
@@ -1119,7 +1140,7 @@ def test_mix_delay():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -1177,11 +1198,14 @@ def test_mix_delay():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Init our MSR information
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],
@@ -1311,7 +1335,7 @@ def test_mix_delay_with_feed():
                   np.log(2) / (3.E-7), np.log(2) / (6.E-7),
                   np.log(2) / (9.E-6), None]
     xss = 0.1 * np.ones(3)
-    xs = adder.ReactionData("b", 3)
+    xs = adder.ReactionData()
     for i in range(len(targets)):
         xs.add_type(types[i], "b", xss, targets=targets[i])
         target_dk = adder.DecayData(half_lives[i], "s", 0.)
@@ -1374,11 +1398,14 @@ def test_mix_delay_with_feed():
             else:
                 num_frac.append(0.)
         isos = [(iso, "70c", True) for iso in isos]
+        adder.isotope.ISO_REGISTRY.clear()
         mat = MockMaterial("test", 1, 1., isos, num_frac, True,
                            "70c", 3, [], adder.constants.IN_CORE, check=False)
         mat.is_default_depletion_library = True
         mat.flux = np.array([0.2, 0.3, 0.5]) * 1.407416667E+19
         mat.volume = 1.
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            {adder.constants.BASE_LIB: depllib}, [mat])
 
         # Init our MSR information
         test_d.set_msr_params("histogram", solve_method, [sys_data], [mat],

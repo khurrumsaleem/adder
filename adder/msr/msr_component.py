@@ -244,7 +244,7 @@ class MSRComponent(object):
 
         # Now we can build the decay matrix
         self._library.set_atomic_mass_vector()
-        self.decay_matrix = self._library.build_decay_matrix()
+        self.decay_matrix = ss.csr_matrix(self._library.build_decay_matrix())
 
     def init_A_matrix(self, solve_method, flux=None):
         if self._in_core and flux is None:
@@ -263,7 +263,7 @@ class MSRComponent(object):
         else:
             self._A_matrix = \
                 self._library.build_depletion_matrix(
-                    flux, matrix_format=mat_fmt, dk_matrix=self.decay_matrix)
+                    flux, self.decay_matrix, matrix_format=mat_fmt)
 
     def init_T_matrix(self, time_step, solver_func, use_cram=True):
         dt = self.delta_t

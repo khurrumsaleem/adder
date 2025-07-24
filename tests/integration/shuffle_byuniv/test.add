@@ -37,12 +37,18 @@ output_hdf5 = results.h5
         [[[item]]]
             neutronics_id = 11
             name = storage_uni
+        [[[list]]]
+            neutronics_ids = 6, 8
+            names = uni
 
     [[aliases]]
         # Showcase universe aliases by setting u1 as an alias for universe 1
         [[[alias 1]]]
             name = u1
             set = 1
+        [[[alias 2]]]
+            name = many_universes
+            set = uni_8, uni_6
 
     [[storage]]
         # Set universe 12 as storage
@@ -58,6 +64,15 @@ output_hdf5 = results.h5
                 neutronics_id = 9
                 # It will have the name new_9
                 name = new_9
+
+[tallies]
+    [[range]]
+        tally_id_start = 1
+        tally_id_end = 100
+        type = universe
+    [[item]]
+        tally_id = 4
+        type = unprocessed
 
 [operations]
     [[state 1]]
@@ -91,14 +106,14 @@ output_hdf5 = results.h5
         label = "Cycle 5"
         [[[shuffle_2]]]
             type = "universe"
-            moves = 5, 8
+            moves = 5, uni_8
         [[[write_input]]]
             filename = "state5.inp"
     [[state 6]]
         label = "Cycle 6"
         [[[revolve_1]]]
             type = "universe"
-            set = storage_uni, 6, 5, 1
+            set = storage_uni, uni_6, 5, 1
             shape = 1, 2, 2
             xy_degrees = 90
             z_flip = False
@@ -155,4 +170,31 @@ output_hdf5 = results.h5
            value = 10
         [[[write_input]]]
             filename = "state13.inp"
+            include_user_tallies = False
+    [[state 12]]
+        label = "Cycle 12"
+        [[[transform_1]]]
+            set = uni_6
+            type = universe
+            pitch = 81
+            yaw = 37
+            angle_units = degrees
+        [[[transform_2]]]
+            set = 7
+            type = universe
+            pitch = 11
+            angle_units = degrees
+        [[[transform_3]]]
+            set = 7
+            type = universe
+            roll = 63
+            angle_units = degrees
+        [[[write_input]]]
+            filename = "state14.inp"
+            include_user_tallies = False
+        [[[shuffle_1]]]
+            type = "universe"
+            moves = new_9, 7, uni_6, 3 
+        [[[write_input_2]]]
+            filename = "state15.inp"
             include_user_tallies = False

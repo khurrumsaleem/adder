@@ -1,4 +1,5 @@
 import numpy as np
+import scipy.sparse as sp
 from collections import OrderedDict
 
 from adder import DepletionLibrary
@@ -95,6 +96,8 @@ origen_lib_all_xs = \
    1                0.0       0.0       0.0       0.0       1.000E 00 1.000E 00
    1   20040  6     0.0       0.0       0.0       0.0       0.0       0.0
    1                0.0       0.0       0.0       0.0       1.000E 00 1.000E 00
+   1   30060  6     0.0       0.0       0.0       0.0       0.0       0.0
+   1                0.0       0.0       0.0       0.0       4.000E-08 2.000E-04
    1   60130  6     0.0       0.0       0.0       0.0       0.0       0.0
    1                0.0       0.0       0.0       0.0       4.000E-08 2.000E-04
    1   70160  6     0.0       0.0       0.0       0.0       0.0       0.0
@@ -117,6 +120,8 @@ origen_lib_all_xs = \
    2                0.0       0.0       0.0       0.0       4.000E-08 2.000E-04
   -1
    3    TEST DECAY LIBRARY: FP
+   3   30060  6     0.0       0.0       0.0       0.0       0.0       0.0
+   3                0.0       0.0       0.0       0.0       4.000E-08 2.000E-04
    3   80160  6     0.0       0.0       0.0       0.0       0.0       0.0
    3                0.0       0.0       0.0       0.0       4.000E-08 2.000E-04
   -1
@@ -128,6 +133,8 @@ origen_lib_all_xs = \
    5  922350 8.000E-01 1.200E 00 3.000E 00 4.000E 00 2.000E-01 8.000E-01   -1.0
   -1
    6    TEST XS AND YIELD LIBRARY: FP
+   6   30060 0.0       0.0       4.200E 01 0.0       0.0       0.0          1.0
+   6     0.0      0.0      1.00E 02 0.0      0.0      0.0      0.0      0.0
    6   80160 0.0       0.0       3.000E-01 7.000E-01 0.0       0.0          1.0
    6     0.0      0.0      1.00E 02 0.00E 01 0.0      0.0      0.0      0.0
   -1
@@ -372,6 +379,10 @@ origen_lib_all_xs_output = \
               0.00000000E+00 0.00000000E+00
    3 0.00000000E+00 0.00000000E+00 0.00000000E+00 9.99998000E+01 1.00000000E+00
      1.00000000E+00
+   3  30060 6 0.00000000E+00 0.00000000E+00 0.00000000E+00 0.00000000E+00
+              0.00000000E+00 0.00000000E+00
+   3 0.00000000E+00 0.00000000E+00 0.00000000E+00 7.58900000E+00 1.00000000E+00
+     1.00000000E+00
    3  60130 6 0.00000000E+00 0.00000000E+00 0.00000000E+00 0.00000000E+00
               0.00000000E+00 0.00000000E+00
    3 0.00000000E+00 0.00000000E+00 0.00000000E+00 1.10780000E+00 1.00000000E+00
@@ -392,12 +403,42 @@ origen_lib_all_xs_output = \
             2.00000000E-01 8.00000000E-01 -1.0
   -1
    6    TEST XS AND YIELD LIBRARY: FP
+   6  30060 0.00000000E+00 0.00000000E+00 4.20000000E+01 0.00000000E+00
+            0.00000000E+00 0.00000000E+00 1.0
+   6 0.00000000E+00 0.00000000E+00 1.00000000E+02 0.00000000E+00 0.00000000E+00
+     0.00000000E+00 0.00000000E+00 0.00000000E+00
    6  80160 0.00000000E+00 0.00000000E+00 3.00000000E-01 7.00000000E-01
             0.00000000E+00 0.00000000E+00 1.0
    6 0.00000000E+00 0.00000000E+00 1.00000000E+02 0.00000000E+00 0.00000000E+00
      0.00000000E+00 0.00000000E+00 0.00000000E+00
   -1
 """
+
+
+def check_decay(this, ref_t12, ref_t12_units, refQ, ref_prod_types,
+                ref_prod_brs, ref_prod_targets, ref_prod_yields):
+    assert this.half_life == ref_t12
+    assert this.half_life_units == ref_t12_units
+    assert this.decay_energy == refQ
+    assert sorted(this._product_types) == sorted(ref_prod_types)
+    for i, type_ in enumerate(ref_prod_types):
+        br, target_yields = this.get_product_data_by_type(type_)
+        assert abs(br - ref_prod_brs[i]) < 1e-15
+        assert np.all(target_yields['targets'] == ref_prod_targets[i])
+        np.testing.assert_allclose(
+            target_yields['yields'], ref_prod_yields[i], atol=1.e-15)
+
+
+def check_xs(this, ref_groups, ref_types, ref_xss, ref_targets,
+             ref_yields, ref_q):
+    assert sorted(this._product_types) == ref_types
+    for type_ in ref_types:
+        xs, target_yields, q_val = this.get_product_data_by_type(type_)
+        assert xs.shape == (ref_groups,)
+        assert xs == ref_xss
+        assert np.all(target_yields['targets'] == ref_targets)
+        assert np.all(target_yields['yields'] == ref_yields)
+        assert q_val == ref_q
 
 
 def test_from_origen():
@@ -428,18 +469,6 @@ def test_from_origen():
                 "Th232", "U233", "Pu239", "Pu241", "Cm245", "Cf252"])
 
     # Check decay
-    def check_decay(this, ref_t12, ref_t12_units, refQ, ref_prod_types,
-                    ref_prod_brs, ref_prod_targets, ref_prod_yields):
-        assert this.half_life == ref_t12
-        assert this.half_life_units == ref_t12_units
-        assert this.decay_energy == refQ
-        assert sorted(this._products.keys()) == sorted(ref_prod_types)
-        for i, type_ in enumerate(ref_prod_types):
-            br, target, yield_ = this[type_]
-            assert br == ref_prod_brs[i]
-            assert target == ref_prod_targets[i]
-            assert yield_ == ref_prod_yields[i]
-
     check_decay(lib.isotopes["H1"].decay, None, "s", 0., [], [], [], [])
     check_decay(lib.isotopes["H2"].decay, None, "s", 0., [], [], [], [])
     check_decay(lib.isotopes["Th231"].decay, None, "s", 201., [], [], [], [])
@@ -451,23 +480,12 @@ def test_from_origen():
     check_decay(lib.isotopes["U238"].decay, None, "s", 202., [], [], [], [])
 
     # Now move on to comparing the xs
-    def check_xs(this, ref_units, ref_groups, ref_types, ref_xss, ref_targets,
-                 ref_yields, ref_q):
-        assert this.xs_units == ref_units
-        assert this.num_groups == ref_groups
-        assert sorted(this.keys()) == ref_types
-        for xs, targets, yields, q_val in this.values():
-            assert xs == ref_xss
-            assert targets == ref_targets
-            assert yields == ref_yields
-            assert q_val == ref_q
-
     # Now move on to comparing the xs
     xs = lib.isotopes["U235"].neutron_xs
-    check_xs(xs, "b", 1, ["fission"], np.array([100.]), ["fission"],
+    check_xs(xs,1, ["fission"], np.array([100.]), ["fission"],
              [1.0], 0.)
     xs = lib.isotopes["U238"].neutron_xs
-    check_xs(xs, "b", 1, ["fission"], np.array([10.]), ["fission"],
+    check_xs(xs, 1, ["fission"], np.array([10.]), ["fission"],
              [1.0], 0.)
 
     # Finally compare the yields
@@ -476,18 +494,18 @@ def test_from_origen():
     nfy = lib.isotopes["U235"].neutron_fission_yield
     ref_vals = {k: 0.5 for k in ref_channels}
     for key in ref_vals.keys():
-        assert nfy._products[key] == ref_vals[key]
+        assert nfy[key] == ref_vals[key]
     nfy = lib.isotopes["U238"].neutron_fission_yield
     ref_vals["H1"] = 0.3
     ref_vals["O16"] = 0.7
     for key in ref_vals.keys():
-        assert nfy._products[key] == ref_vals[key]
+        assert nfy[key] == ref_vals[key]
     # Now check the rest
     for iso in ["Th232", "U233", "Pu239", "Pu241", "Cm245", "Cf252"]:
         nfy = lib.isotopes[iso].neutron_fission_yield
         ref_vals = {k: 0.0 for k in ref_channels}
         for key in ref_vals.keys():
-            assert nfy._products[key] == ref_vals[key]
+            assert nfy[key] == ref_vals[key]
 
 
 def test_from_origen_all_decay():
@@ -518,18 +536,6 @@ def test_from_origen_all_decay():
     assert sorted(lib.initial_isotopes) == all_isos
 
     # Check decay
-    def check_decay(this, ref_t12, ref_t12_units, refQ, ref_prod_types,
-                    ref_prod_brs, ref_prod_targets, ref_prod_yields):
-        assert this.half_life == ref_t12
-        assert this.half_life_units == ref_t12_units
-        assert this.decay_energy == refQ
-        assert sorted(this._products.keys()) == sorted(ref_prod_types)
-        for i, type_ in enumerate(ref_prod_types):
-            br, target, yield_ = this[type_]
-            assert abs(br - ref_prod_brs[i]) < 1e-15
-            assert target == ref_prod_targets[i]
-            np.testing.assert_allclose(yield_, ref_prod_yields[i], atol=1.e-15)
-
     ref_channels = sorted(["H1", "O16"])
     for iso_name in yield_isos:
         # Should be no neutron_xs, no decay, and I inputted 0 values for
@@ -541,7 +547,7 @@ def test_from_origen_all_decay():
         nfy = iso.neutron_fission_yield
         ref_vals = {k: 0.0 for k in ref_channels}
         for key in ref_vals.keys():
-            assert nfy._products[key] == ref_vals[key]
+            assert nfy[key] == ref_vals[key]
 
     for iso_name in manual_isos:
         # Should have manually set decay info, no neutron_xs, and
@@ -568,7 +574,7 @@ def test_from_origen_all_decay():
             nfy = iso.neutron_fission_yield
             ref_vals = {k: 0.5 for k in ref_channels}
             for key in ref_vals.keys():
-                assert nfy._products[key] == ref_vals[key]
+                assert nfy[key] == ref_vals[key]
 
 
 def test_from_origen_all_xs():
@@ -591,8 +597,8 @@ def test_from_origen_all_xs():
     assert np.array_equal(lib.neutron_group_structure, np.array([0., 20.]))
     # We test against this list here because from_origen adds in fissile
     # isotopes that yield data exist for.
-    manual_isos = ["H1", "He4", "C13", "N16", "O16", "U233", "U234", "U234_m1",
-                   "U235", "U236", "U236_m1"]
+    manual_isos = ["H1", "He4", "C13", "Li6", "N16", "O16", "U233", "U234", 
+                   "U234_m1", "U235", "U236", "U236_m1"]
     yield_isos = ["Th232", "U238", "Pu239", "Pu241", "Cm245", "Cf252"]
     all_isos = sorted(manual_isos + yield_isos)
     assert sorted(lib.isotopes) == all_isos
@@ -606,16 +612,17 @@ def test_from_origen_all_xs():
         assert this.decay_energy == 0.
         assert len(this._products) == 0
 
-    def check_xs(this, ref_units, ref_groups, ref_type_data):
-        assert this.xs_units == ref_units
-        assert this.num_groups == ref_groups
-        assert sorted(this.keys()) == sorted(ref_type_data.keys())
-        for key, (xs, targets, yields, q_val) in this.items():
-            ref_xs, ref_targets, ref_yields, ref_q = ref_type_data[key]
+    def check_xs(this, ref_groups, ref_type_data):
+        assert sorted(this._product_types) == sorted(ref_type_data.keys())
+        for type_ in ref_type_data.keys():
+            ref_xs, ref_targets, ref_yields, ref_q = ref_type_data[type_]
+            xs, target_yields, q_val = this.get_product_data_by_type(type_)
             ref_xs = np.array([ref_xs])
+            assert xs.shape == (ref_groups,)
             assert xs == ref_xs
-            assert targets == ref_targets
-            assert yields == ref_yields
+            assert np.all(target_yields['targets'] == ref_targets)
+            np.testing.assert_allclose(
+                target_yields['yields'], ref_yields, atol=1.e-15)
             assert q_val == ref_q
 
     ref_channels = sorted(["O16"])
@@ -629,7 +636,7 @@ def test_from_origen_all_xs():
         nfy = iso.neutron_fission_yield
         ref_vals = {k: 0.0 for k in ref_channels}
         for key in ref_vals.keys():
-            assert nfy._products[key] == ref_vals[key]
+            assert nfy[key] == ref_vals[key]
 
     for iso_name in manual_isos:
         # Should have manually set xs info, no decay, and
@@ -637,15 +644,19 @@ def test_from_origen_all_xs():
         iso = lib.isotopes[iso_name]
         check_stable_decay(iso.decay)
         if iso_name == "U235":
-            check_xs(iso.neutron_xs, "b", 1,
+            check_xs(iso.neutron_xs, 1,
                      {"(n,gamma)": (1., ["U236", "U236_m1"], [0.8, 0.2], 0.),
                       "(n,2n)": (2., ["U234", "U234_m1"], [0.6, 0.4], 0.),
                       "(n,3n)": (3., ["U233"], [1.], 0.),
                       "fission": (4., ["fission"], [1.0], 0.)})
         elif iso_name == "O16":
-            check_xs(iso.neutron_xs, "b", 1,
+            check_xs(iso.neutron_xs, 1,
                      {"(n,a)": (0.3, ["C13", "He4"], [1.0, 1.0], 0.),
                       "(n,p)": (0.7, ["N16", "H1"], [1.0, 1.0], 0.)})
+        elif iso_name == "Li6":
+            # Note that (n,a) should have been assigned to (n,t) by ADDER
+            check_xs(iso.neutron_xs, 1,
+                     {"(n,t)": (42., ["H3", "He4"], [1.0, 1.0], 0.)})
         else:
             assert iso.neutron_xs is None
 
@@ -653,11 +664,11 @@ def test_from_origen_all_xs():
         if iso_name == "U235":
             ref_vals = {k: 1. for k in ref_channels}
             for key in ref_vals.keys():
-                assert nfy._products[key] == ref_vals[key]
+                assert nfy[key] == ref_vals[key]
         elif iso_name == "U233":
             ref_vals = {k: 0.0 for k in ref_channels}
             for key in ref_vals.keys():
-                assert nfy._products[key] == ref_vals[key]
+                assert nfy[key] == ref_vals[key]
         else:
             assert nfy is None
 
@@ -777,18 +788,6 @@ def test_to_hdf5():
                 "Th232", "U233", "Pu239", "Pu241", "Cm245", "Cf252"])
 
     # Check the decay
-    def check_decay(this, ref_t12, ref_t12_units, refQ, ref_prod_types,
-                    ref_prod_brs, ref_prod_targets, ref_prod_yields):
-        assert this.half_life == ref_t12
-        assert this.half_life_units == ref_t12_units
-        assert this.decay_energy == refQ
-        assert sorted(this._products.keys()) == sorted(ref_prod_types)
-        for i, type_ in enumerate(ref_prod_types):
-            br, target, yield_ = this[type_]
-            assert br == ref_prod_brs[i]
-            assert target == ref_prod_targets[i]
-            assert yield_ == ref_prod_yields[i]
-
     check_decay(lib.isotopes["H1"].decay, None, "s", 0., [], [], [], [])
     check_decay(lib.isotopes["H2"].decay, None, "s", 0., [], [], [], [])
     check_decay(lib.isotopes["Th231"].decay, None, "s", 201., [], [], [], [])
@@ -800,22 +799,11 @@ def test_to_hdf5():
     check_decay(lib.isotopes["U238"].decay, None, "s", 202., [], [], [], [])
 
     # Now move on to comparing the xs
-    def check_xs(this, ref_units, ref_groups, ref_types, ref_xss, ref_targets,
-                 ref_yields, ref_q):
-        assert this.xs_units == ref_units
-        assert this.num_groups == ref_groups
-        assert sorted(this.keys()) == ref_types
-        for xs, targets, yields, q_val in this.values():
-            assert xs == ref_xss
-            assert targets == ref_targets
-            assert yields == ref_yields
-            assert q_val == ref_q
-
     xs = lib.isotopes["U235"].neutron_xs
-    check_xs(xs, "b", 1, ["fission"], np.array([100.]), ["fission"],
+    check_xs(xs, 1, ["fission"], np.array([100.]), ["fission"],
              [1.0], 0.)
     xs = lib.isotopes["U238"].neutron_xs
-    check_xs(xs, "b", 1, ["fission"], np.array([10.]), ["fission"],
+    check_xs(xs, 1, ["fission"], np.array([10.]), ["fission"],
              [1.0], 0.)
 
     # Finally compare the yields
@@ -824,18 +812,18 @@ def test_to_hdf5():
     nfy = lib.isotopes["U235"].neutron_fission_yield
     ref_vals = {k: 0.5 for k in ref_channels}
     for key in ref_vals.keys():
-        assert nfy._products[key] == ref_vals[key]
+        assert nfy[key] == ref_vals[key]
     nfy = lib.isotopes["U238"].neutron_fission_yield
     ref_vals["H1"] = 0.3
     ref_vals["O16"] = 0.7
     for key in ref_vals.keys():
-        assert nfy._products[key] == ref_vals[key]
+        assert nfy[key] == ref_vals[key]
     # Now check the rest
     for iso in ["Th232", "U233", "Pu239", "Pu241", "Cm245", "Cf252"]:
         nfy = lib.isotopes[iso].neutron_fission_yield
         ref_vals = {k: 0.0 for k in ref_channels}
         for key in ref_vals.keys():
-            assert nfy._products[key] == ref_vals[key]
+            assert nfy[key] == ref_vals[key]
 
 
 def test_A_matrix(depletion_lib_2g):
@@ -885,7 +873,8 @@ def test_A_matrix(depletion_lib_2g):
     # we are aware of it and it has no effect
     # we could do a try/except but to catch a warning (vice error)
     # will require extra code that doesn't seem worth it.
-    testA = depletion_lib_2g.build_depletion_matrix(flux).todense()
+    testA = depletion_lib_2g.build_depletion_matrix(
+        flux, sp.csr_matrix(test_decay_matrix)).todense()
     np.testing.assert_allclose(A, testA, rtol=1.e-14)
 
 
@@ -926,7 +915,7 @@ def test_clone(depletion_lib_2g):
         ref = depletion_lib_2g.isotopes[iso_name]
 
         # Check the shallow copies
-        attribs = ["name", "atomic_mass", "neutron_fission_yield", "decay"]
+        attribs = ["atomic_mass", "neutron_fission_yield", "decay"]
         for attrib in attribs:
             test_a = getattr(test, attrib)
             ref_a = getattr(ref, attrib)

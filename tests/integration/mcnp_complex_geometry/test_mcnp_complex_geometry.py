@@ -28,8 +28,8 @@ class ComplexGeometryHarness(TestHarness):
 
         warning_3 = "There are more cells in universe 1016 than the universe " \
                     "it was cloned from due to a lattice structure being " \
-                    "split up. The volumes for cells in universe 1016 should " \
-                    "be checked."
+                    "split up. The volumes for cells in universe 1016 " \
+                    "and any user tallies should be checked."
 
         self.log_messages = [('warning', warning_1, 1),
                              ('warning', warning_2, 1),

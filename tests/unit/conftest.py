@@ -14,7 +14,7 @@ def depletion_lib():
     depllib.add_isotope("He4", decay=he4dk)
 
     # U235
-    u235xs = ReactionData("b", 1)
+    u235xs = ReactionData()
     u235xs.add_type("fission", "b", [100.0])
     u235dk = DecayData(np.log(2.) / 0.5, "s", 200.)
     u235dk.add_type("alpha", 1., "Th231")
@@ -28,7 +28,7 @@ def depletion_lib():
     depllib.add_isotope("Th231", decay=th231dk)
 
     # U238
-    u238xs = ReactionData("b", 1)
+    u238xs = ReactionData()
     u238xs.add_type("fission", "b", [10.0], "fission")
     u238yd = YieldData()
     u238yd.add_isotope("H1", 1.)
@@ -63,11 +63,11 @@ def depletion_lib():
 def simple_lib():
     lib = DepletionLibrary("test", np.array([0., 20.]))
 
-    u235xs = ReactionData("b", 1)
+    u235xs = ReactionData()
     u235xs.add_type("fission", "b", np.array([10.]), yields_=[1.])
     lib.add_isotope("U235", xs=u235xs)
 
-    u238xs = ReactionData("b", 1)
+    u238xs = ReactionData()
     u238xs.add_type("fission", "b", np.array([1.]))
     lib.add_isotope("U238", xs=u238xs)
     lib.finalize_library()
@@ -95,19 +95,19 @@ def simple_lib():
 def simple_lib_h1u234():
     lib = DepletionLibrary("test", np.array([0., 20.]))
 
-    u235xs = ReactionData("b", 1)
+    u235xs = ReactionData()
     u235xs.add_type("fission", "b", np.array([10.]), yields_=[1.])
     lib.add_isotope("U235", xs=u235xs)
 
-    u238xs = ReactionData("b", 1)
+    u238xs = ReactionData()
     u238xs.add_type("fission", "b", np.array([1.]))
     lib.add_isotope("U238", xs=u238xs)
 
-    h1xs = ReactionData("b", 1)
+    h1xs = ReactionData()
     h1xs.add_type("(n,gamma)", "b", np.array([1.]), "U235")
     lib.add_isotope("H1", xs=h1xs)
 
-    u234xs = ReactionData("b", 1)
+    u234xs = ReactionData()
     u234xs.add_type("(n,gamma)", "b", np.array([1.]), "U235")
     lib.add_isotope("U234", xs=u234xs)
 
@@ -126,7 +126,7 @@ def depletion_lib_2g():
     depllib.add_isotope("He4", decay=he4dk)
 
     # U235
-    u235xs = ReactionData("b", 2)
+    u235xs = ReactionData()
     u235xs.add_type("fission", "b", [50.0, 125.0])
     u235dk = DecayData(np.log(2.) / 0.5, "s", 200.)
     u235dk.add_type("alpha", 1., "Th231")
@@ -140,7 +140,7 @@ def depletion_lib_2g():
     depllib.add_isotope("Th231", decay=th231dk)
 
     # U238
-    u238xs = ReactionData("b", 2)
+    u238xs = ReactionData()
     u238xs.add_type("fission", "b", [5.0, 12.5])
     u238yd = YieldData()
     u238yd.add_isotope("H1", 1.)

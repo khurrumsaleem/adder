@@ -54,6 +54,9 @@ def get_data(h5_file, mat_name):
     keffs_stddev = []
     powers = []
     fluxes_1grp = []
+    power_densities = []
+    burnups = []
+    fission_densities = []
     Q_recs = []
     isotope_data = []
     isotope_set = set()
@@ -71,11 +74,14 @@ def get_data(h5_file, mat_name):
             powers.append(grp.attrs["power"])
             Q_recs.append(grp.attrs["Q_recoverable"])
             fluxes_1grp.append(np.sum(material.flux))
+            power_densities.append(material.power_density)
+            burnups.append(material.burnup)
+            fission_densities.append(material.fission_density)
 
             isotope_info = defaultdict(lambda: 0.0)
-            for i in range(len(material.isotopes)):
-                isotope_info[material.isotopes[i].name] = \
-                    material.number_densities[i]
+            for i in range(material.num_isotopes):
+                iso = material.isotope_obj(i)
+                isotope_info[iso.name] = material.number_densities[i]
             isotope_set.update(isotope_info.keys())
             isotope_data.append(isotope_info)
 
@@ -88,6 +94,9 @@ def get_data(h5_file, mat_name):
     results['keffs'] = keffs
     results['keffs_stddev'] = keffs_stddev
     results['fluxes_1grp'] = fluxes_1grp
+    results['power_densities'] = power_densities 
+    results['burnups'] = burnups
+    results['fission_densities'] = fission_densities
     results['Q_recs'] = Q_recs
     results['isotope_data'] = isotope_data
     results['isotope_set'] = sorted(list(isotope_set))

@@ -1,0 +1,61 @@
+case_name = 2x2x2 lattice small case
+neutronics_solver = "MCNP"
+neutronics_exec = mcnp.EXE
+num_neutronics_threads = 2
+num_depletion_threads = 4
+depletion_chunksize = 100
+neutronics_input_file = test.inp
+neutronics_library_file = ./xsdir
+depletion_solver = cram16
+depletion_method = "predictor"
+depletion_library_file = test.h5
+depletion_library_name = test
+depletion_substeps = 14
+output_hdf5 = results.h5
+use_depletion_library_xs = False
+renormalize_power_density = True
+
+[materials]
+    [[metadata]]
+        [[[list]]]
+            neutronics_ids = 61, 62
+            densities = 1.0, 1.0
+    [[storage]]
+        [[[redefine]]]
+            [[[[list_1]]]]
+                neutronics_ids = 61
+            [[[[range 1]]]]
+                neutronics_id_start = 62
+                neutronics_id_end = 63
+                exclude_neutronics_ids = 63
+
+[operations]
+    [[state 0]]
+        label = "Cycle 0"
+    [[state 1]]
+        label = "Cycle 1"
+        [[[deplete_1]]]
+            powers = 1., 2.
+            durations = 1, 1
+            execute_endpoint = False
+    [[state 2]]
+        label = "Cycle 2"
+        [[[deplete]]]
+            powers = 1.5, 2.5
+            durations = 1, 1
+            renormalize_power_density = False
+            execute_endpoint = False
+    [[state 3]]
+        label = "Cycle 3"
+        [[[deplete]]]
+            fluxes = 1.1e14, 1.2e15
+            durations = 2, 1
+            execute_endpoint = False
+    [[state 4]]
+        label = "Cycle 4"
+        [[[deplete]]]
+            depletion_method = "cecm"
+            powers = .5, .7
+            durations = 4., 3.
+            execute_endpoint = False
+            renormalize_power_density = False

@@ -43,6 +43,8 @@ class Surface(object):
         The surface ID
     coord_transform: CoordTransform or None
         The transformation associated with this surface
+    initial_coord_transform: CoordTransform or None
+        The transformation associated with this surface in the base MCNP input
     type : _SURF_TYPES
         The surface type ("cz", e.g.)
     params : str
@@ -63,6 +65,8 @@ class Surface(object):
         # Assign the parameters
         self.id = surf_id
         self.coord_transform = transform
+        self.initial_coord_transform = \
+            transform.clone(new_id=0) if transform else None
         self.type = surf_type
         self.params = surf_params
         self.boundary_type = boundary_type

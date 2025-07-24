@@ -12,6 +12,8 @@ from .coord_transform import CoordTransform
 from .input_utils import *
 from .sim_settings import SimSettings
 from .surface import Surface
+from .tally import Tally
+from adder.mcnp.tally import *
 
 # Note on lacking features:
 # This tool does not support:
@@ -20,11 +22,10 @@ from .surface import Surface
 
 
 def get_tallies(data_block):
-    """Obtain cards of tallies present in the input.
+    """Create new tallies objects, according to tally cards defined in the MCNP input.
 
-    No processing or extraction of information from these tally cards is
-    done; this method simply finds tallies and pulls them out of
-    data_block.
+    Here, extraction of information from the tally cards is
+    done.
 
     Parameters
     ----------
@@ -33,7 +34,7 @@ def get_tallies(data_block):
 
     Returns
     -------
-    List of str:
+    List of tally objects:
         Tally cards
     List of str:
         Remaining cards
@@ -45,11 +46,15 @@ def get_tallies(data_block):
         multipliers
     """
 
-    tally_cards = []
+    tally_dict = {}
+    default_tally_cards = {}
+    id_to_tally_cards = {}
+    tmesh_card = []
     other_cards = []
     multiplier_mat_ids = set()
     max_tally_id = 0
     active_tmesh_block = False
+    tally = Tally(id=TALLY_MAX_ID)
     for line in data_block:
         found_it = False
         # See if this line starts with any of our tally card identifiers
@@ -59,7 +64,8 @@ def get_tallies(data_block):
                 # This means we have the start of this tally type
                 # Also store it
                 found_it = True
-                tally_cards.append(line)
+                # add tmesh
+                tmesh_card.append(line)
                 # But we also should denote that this is an
                 # active tmesh block so that we store all others
                 # until we find the end of the tmesh block
@@ -71,7 +77,6 @@ def get_tallies(data_block):
                     # and sd* are possible, one is a tally, one isnt
                     if line.lower().startswith(key) and \
                         line[len(key)].isdigit():
-
                         # Then it is a tally
                         # Check if the tally ID is too large
                         # and if not, store the tally
@@ -87,6 +92,19 @@ def get_tallies(data_block):
                             # Remove the x/y/z
                             tally_dat = tally_dat[:-1]
                         tally_id = num_format(tally_dat[len(key):], 'int')
+                        tally_card = tally_dat[:len(key)].lower()
+                        # add default tally card and break
+                        if tally_id == 0:
+                            default_tally_cards[tally_card] = (
+                                line[len(tally_dat):]
+                            )
+                            found_it = True
+                            break
+                        # list of tally cards linked to tally ids
+                        if tally_id in id_to_tally_cards.keys():
+                            id_to_tally_cards[tally_id].append(tally_card)
+                        else:
+                            id_to_tally_cards[tally_id] = [tally_card]
                         if max_tally_id < tally_id:
                             max_tally_id = tally_id
                         if tally_id >= ADDER_TALLY_ID:
@@ -96,13 +114,49 @@ def get_tallies(data_block):
                             msg += "{}".format(ADDER_TALLY_ID - 1) + \
                                    "must be reduced "
                             raise ValueError(msg)
-                        tally_cards.append(line)
-                        found_it = True
 
-                        # Before we quit, lets analyze any FM cards to
-                        # see what multiplier material ids are used
-                        if key == "fm":
+                        # Creating and updating tally object to append to tally_cards_list. Each card type is assigned.
+                        # other_cards refers to the tally card types that don't require processing (En, Tn, FQn,
+                        # DEn, DFn, EMn, TMn, Fun/TALLYX, Fn, DDn, DXT, FTn, SPDTL)
+                        if key == "f":
+                            f_card_s = " ".join(line.split(" ")[1:])
+                            tally_dict = update_tally_dict(
+                                tally_id, "f_card", f_card_s, tally_dict
+                            )
+                            # get tracking particle, i.e. n, p, e or others.
+                            particles = (
+                                line.lower()
+                                .split(" ")[0]
+                                .split(":")[1]
+                                .split(",")
+                            )
+                            tally_dict[tally_id].particles = particles
+                        elif key == "fmesh":
+                            tally_dict = update_tally_dict(
+                                tally_id, "fmesh_card", line, tally_dict
+                            )
+                        elif key == "fc":
+                            tally_dict = update_tally_dict(
+                                tally_id, "fc_card", line, tally_dict
+                            )
+                        elif key == "cf":
+                            tally_dict = update_tally_dict(
+                                tally_id, "cf_card", line, tally_dict
+                            )
+                        elif key == "fm":
+                            # remove 'fm' or 'FM' followed by numbers & any extra space
+                            fm_line = re.sub(r'\bfm\d+\b|\bFM\d+\b', '', line)
+                            fm_line = re.sub(r'\s+', ' ', fm_line).strip()
                             multiplier_mat_ids.update(_analyze_fm_card(line))
+                            tally_dict = update_tally_dict(
+                                tally_id, "fm_card", fm_line, tally_dict
+                            )
+                        else:
+                            tally_dict = update_tally_dict(
+                                tally_id, "other_cards", line, tally_dict
+                            )
+
+                        found_it = True
                         break
 
             # Now if we got here and found_it is still false, then we
@@ -113,11 +167,30 @@ def get_tallies(data_block):
             # If we are here then we are in the midst of an active
             # tmesh block, and so we store all cards within the block
             # as tallies and have to check to see when the block ends
-            tally_cards.append(line)
+            tmesh_card.append(line)
             if line.lower().startswith(TMESH_CARDS[1]):
                 active_tmesh_block = False
 
-    return tally_cards, other_cards, max_tally_id, multiplier_mat_ids
+    # add default tally cards to user tallies, if not defined for tally n
+    for tally_card in default_tally_cards.keys():
+        for tally_id in id_to_tally_cards.keys():
+            if (
+                    "fmesh" in id_to_tally_cards[tally_id] and
+                    tally_card not in ["de", "df", "fc", "fm", "tr"]
+            ):
+                pass
+            elif tally_card not in id_to_tally_cards[tally_id]:
+                line = (
+                    tally_card + str(tally_id) +
+                    default_tally_cards[tally_card]
+                )
+                tally_dict = update_tally_dict(
+                    tally_id, "other_cards", line, tally_dict
+                )
+
+    tally_cards = list(tally_dict.values())
+
+    return tally_cards, tmesh_card, other_cards, max_tally_id, multiplier_mat_ids
 
 
 def get_output(data_block):
@@ -876,7 +949,14 @@ def convert_density(m_data, density):
             nucs.append(nuc)
             nuc_density_types.append("ao")
             nuc_densities.append(fraction)
-            numerator += fraction * adder.data.atomic_mass(nuc)
+            try:
+                numerator += fraction * adder.data.atomic_mass(nuc)
+            except TypeError:
+                element = re.match(r"([a-zA-Z]+)", nuc).group(1)
+                raise ValueError("Check metastable state for element '{}' "
+                                 "in MCNP input, as ADDER can't handle "
+                                 "ZAID of nuclides with metastable state "
+                                 "higher than 1.".format(element))
             denominator += fraction
         elif fraction < 0.:
             nucs.append(nuc)
@@ -921,7 +1001,7 @@ def convert_density(m_data, density):
     for n, nuc in enumerate(nucs):
         revised_m_data.append((nuc, nuc_fractions[n], m_data[n][-1]))
     # And add in the zero fraction isotopes in case they have meaning in
-    # the future [as an example of meaning, this may be a way to have the user
+    # the future [as example of meaning, this may be a way to have the user
     # input specific isotopes they wish to have new depletion library xs
     # gathered]
     for nuc, m_data_val in zero_frac_nuc_data:
@@ -1111,8 +1191,10 @@ def update_materials(universes, allowed_isotopes, materials,
         data = "m{}".format(mat_id)
         zaids_to_write = []
         fracs_to_write = []
-        for iso, frac, to_print in zip(mat.isotopes, mat.atom_fractions,
-                                       mat.isotopes_in_neutronics):
+        for i in range(mat.num_isotopes):
+            iso = mat.isotope_obj(i)
+            frac = mat.atom_fractions[i]
+            to_print = mat.isotopes_in_neutronics[i]
             zaid = _zam_to_mcnp(iso.Z, iso.A, iso.M, iso.xs_library)
             if to_print and frac > 0.:
                 zaids_to_write.append(zaid)
@@ -1152,8 +1234,10 @@ def update_materials(universes, allowed_isotopes, materials,
         data = "m{}".format(mat.id)
         zaids_to_write = []
         fracs_to_write = []
-        for iso, frac, to_print in zip(mat.isotopes, mat.atom_fractions,
-                                       mat.isotopes_in_neutronics):
+        for i in range(mat.num_isotopes):
+            iso = mat.isotope_obj(i)
+            frac = mat.atom_fractions[i]
+            to_print = mat.isotopes_in_neutronics[i]
             zaid = _zam_to_mcnp(iso.Z, iso.A, iso.M, iso.xs_library)
             if zaid in allowed_isotopes and to_print and frac > 0.:
                 zaids_to_write.append(zaid)
@@ -1222,7 +1306,7 @@ def create_material_flux_tallies(universes, depl_libs):
     cards.append(e4)
     cards.append("FC{} Flux tally for depletion".format(t_id))
 
-    return cards
+    return cards, t_id
 
 
 def create_rxn_rate_tallies(universes, allowed_isotopes, isos_and_rxn_keys,
@@ -1265,6 +1349,7 @@ def create_rxn_rate_tallies(universes, allowed_isotopes, isos_and_rxn_keys,
     # using a single tally with every isotope, rxn rate, and cell)
 
     model_cells = universes[ROOT_UNIV].nested_cells
+    tally_ids=[]
 
     # In the following loop we will determine the reactions we need to
     # tally from MCNP as well as gather the list of *all* isotopes for
@@ -1289,7 +1374,8 @@ def create_rxn_rate_tallies(universes, allowed_isotopes, isos_and_rxn_keys,
             continue
         rxn_keys = []
         rxn_strs = []
-        for key in xs_lib.keys():
+        for idx in range(xs_lib.num_types):
+            key = xs_lib.get_type_by_idx(idx)
             if key in MCNP_RXN_TALLY_IDS:
                 rxn_keys.append(key)
                 rxn_strs.append(
@@ -1318,7 +1404,8 @@ def create_rxn_rate_tallies(universes, allowed_isotopes, isos_and_rxn_keys,
 
         # Now only act on those materials we need to deplete
         if mat.is_depleting and not mat.is_default_depletion_library:
-            for i, iso in enumerate(mat.isotopes):
+            for i in range(mat.num_isotopes):
+                iso = mat.isotope_obj(i)
                 # Skip any isotopes that are not depleting, not in the neut
                 # model, and not in the library
                 if not iso.is_depleting or not mat.isotopes_in_neutronics[i]:
@@ -1413,13 +1500,14 @@ def create_rxn_rate_tallies(universes, allowed_isotopes, isos_and_rxn_keys,
             tally_map_mult_bins.append((iso_name, bin_ids))
         tally_map[t_id] = (cell_set, tally_map_mult_bins)
         tally_cards.append(fm4)
+        tally_ids.append(t_id)
 
     # So now we have the pseudo mat cards printed, the tally energy cards
     # printed, and the tally cards. We also have the map of where to find
     # the tally data as well.
 
     # At this stage we are set to return our results
-    return tally_cards, tally_map, isos_and_rxn_keys
+    return tally_ids, tally_cards, tally_map, isos_and_rxn_keys
 
 
 def create_output(user_output=None):
@@ -1537,14 +1625,24 @@ def _analyze_fm_card(line):
 
     # Now we need to extract the material id from each bin set
     for i in range(len(bin_sets)):
-        # Pull off the first two values from the bin data
-        bin_data = bin_sets[i].split(maxsplit=2)
+        # Split the string to get all bin data entries
+        bin_data = bin_sets[i].split(maxsplit=-1)
+        
         # The only type of bin set that does not have a material id is
         # the special multiplier set: "c k". This also happens to be the
         # only bin set type that has < 3 values and so we can use that
         # to discriminate (this is also the reason we use maxsplit=2)
         if len(bin_data) > 2:
-            # Then this has a material, store its id
-            mat_ids.add(num_format(bin_data[1], 'int'))
+            # Distinguish between multiplier and attenuator set
+            # to store material id
+            if bin_data[1]!='-1':
+                # take material id from multiplier set
+                mat_ids.add(num_format(bin_data[1], 'int'))             
+            elif bin_data[1]=='-1': 
+                # get the number of materials used by attenuator set
+                # and take their material ids
+                n_mats_att=int((len(bin_data)-2)/2)
+                for j in range(n_mats_att):
+                        mat_ids.add(num_format(bin_data[2*(1+j)], 'int')) 
 
     return mat_ids

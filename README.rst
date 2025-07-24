@@ -3,11 +3,9 @@ Advanced Dimensional Depletion for Engineering of Reactors (ADDER)
 ==================================================================
 
 The Advanced Dimensional Depletion for Engineering of Reactors (ADDER) software
-is a flexible, performant, and modern fuel management and depletion tool. The
-target audience of this tool is first the Research and Test Reactor Program
-at Argonne National Laboratory (ANL) and, eventually, to experts outside of ANL.
-This report is the user guide for the software release referred to as ADDER
-v1.0.1.
+is a flexible, performant, and modern fuel management and depletion tool. The 
+report included in the Documents folder is the user guide for the software 
+release referred to as ADDER v1.1.0, released in July 2025.
 
 This software is fundamentally an interface between the user, external neutron
 diffusion or transport theory solvers, and a depletion solver. The user will
@@ -20,9 +18,10 @@ for the design of a reactor, such as branch calculations for multiple xenon
 conditions or operating temperatures.
 
 The initial application of ADDER will be to utilize the MCNP6_ (or MCNP5_)
-software for neutron transport and either ORIGEN2_ for depletion and decay
-functionality or an internal Chebyshev rational approximation method (CRAM_)
-solver.
+software for neutron transport and either an internal Chebyshev rational 
+approximation method (CRAM_) solver or ORIGEN2_ for depletion and decay 
+functionality. The former, developed natively within ADDER, is generally 
+preferred.
 
 This README file provides a primer for the ADDER software. The complete 
 software manual is located in the ``Documents`` folder of this repository. 
@@ -35,7 +34,7 @@ Installing ADDER
 ****************
 
 ADDER is written in the Python 3 programming language. It therefore requires
-that a Python 3.7-compatible interpreter be installed locally.
+that a Python 3.8 interpreter be installed locally.
 
 In addition to Python itself, ADDER relies on third-party packages.
 All prerequisites can be installed using Anaconda_ (recommended), Python's
@@ -60,6 +59,14 @@ pip_ command, or through the package manager in most Linux distributions.
    `Configobj <https://configobj.readthedocs.io/en/stable/configobj.htm>`_
       Configobj is a simple but powerful configuration file reader with syntax
       similar to the classic Windows .INI file format.
+
+   `MCNPTools <https://github.com/lanl/mcnptools>`_
+      MCNPTools includes binary utilities that facilitate common tasks or 
+      querying MCNP output files. ADDER uses MCNPTools to extract MCNP tallies.
+
+   `pyparsing <https://github.com/pyparsing/pyparsing>`_
+      pyparsing is used to parse strings in the initial MCNP input to retrieve 
+      information related to MCNP tally cards that are processed by ADDER.
 
 .. admonition:: Optional
    :class: note
@@ -106,6 +113,7 @@ of interest.
 ***************
 Executing ADDER
 ***************
+
 ADDER can be executed in whichever directory the user wishes. The simplest
 usage of ADDER includes providing one input argument, the name of the
 already-generated ADDER input file. The format of this input file is described
@@ -176,7 +184,6 @@ RAM-based or local filesystems as available. It should be noted that if the
 depletion solver fails to execute, ADDER will copy the working directory to
 ADDER's main execution directory for later user inspection.
 
-
 ******************
 ADDER Data Sources
 ******************
@@ -226,40 +233,51 @@ The ADDER software is distributed with a few utility scripts, included in the
 	Radiation Safety Information Computational Center (RSICC) distribution 
 	of ORIGEN2.2. The path to the library folder needs to be provided via 
 	the command-line argument ``-r``. Additional information can be found 
-	in Section 4.1.1 of the manual.
+	in the User Guide.
 * ``adder_convert_origen22_library.py``: 
 	this scripts allows users to convert an individual ORIGEN2.2 library file, 
 	containing the desired cross-sections and yield values to convert. 
-	The script requires several arguments. More information can be found in 
-	Section 4.1.1 of the manual.
+	The script requires several arguments. More information can be found in the
+    User Guide
 * ``adder_extract_materials.py``: 
 	extracts the ADDER HDF5 output (``results.h5``) and generates a ``.csv`` 
 	file containing the power, k:eff:, one-group fluxes, Q-recoverable energy, 
 	and isotopic data for a selected material. The script requires 
 	(in the following order): the path to the ``results.h5`` file generated
 	by ADDER, the path to the desired output ``.csv`` file, and the name of the 
-	required material. Additional information can be found in Section 3.1 of the manual.
+	required material. Additional information can be found in the User Guide.
+* ``adder_extract_tallies.py``:
+    extracts the ADDER HDF5 output (``results.h5``) and generate a ``.csv`` file
+    containing the values of the tallies included in the ADDER calculation.
+	The script requires (in the following order): the path to the ``results.h5`` 
+    file generated by ADDER, the path to the desired output ``.csv`` file, and 
+    the ID of the required tally. 
 
 ****************
 Release Schedule
 ****************
-ADDER v.1.1.0 is currently scheduled to release at the end of August 2024. Dates are subject to change.
+
+ADDER v2.0.0 is currently scheduled to release in 2026. Dates are subject to 
+change.
 
 ********
 Contacts
 ********
-For inquiries about the ADDER software please reach out to our development team at adder@anl.gov.
-Please contact us to be added to the list of known users and receive notifications concerning errors and
-bugs as they are discovered, as well as updates on new versions releases.
+
+For inquiries about the ADDER software please reach out to our development team 
+at adder@anl.gov. Please contact us to be added to the list of known users and 
+receive notifications concerning errors and bugs as they are discovered, as 
+well as updates on new versions releases.
 
 ************
 Citing ADDER
 ************
+
 If you use ADDER for your work, please cite the following reference:
 
-Anderson, K., Mascolino, V., and Nelson, A. G.. 2022. "User Guide to the 
-Advanced Dimensional Depletion for Engineering of Reactors (ADDER) Software". 
-United States. https://doi.org/10.2172/1866062. https://www.osti.gov/servlets/purl/1866062.
+V. Mascolino, K. Anderson, C. Castagna, M. Elsawi, and E. Wilson, "User Guide
+to the Advanced Dimensional Depletion for Engineering of Reactors (ADDER)
+Software", ANL/RTR/TM-24/25, Rev 1, Argonne National Laboratory, USA, Jul. 2025
 
 **********
 References

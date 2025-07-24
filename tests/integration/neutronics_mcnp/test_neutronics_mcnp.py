@@ -1,6 +1,8 @@
 import pytest
 import os
+import h5py
 import numpy as np
+import scipy.sparse as sp
 from tests import mcnp_2x2x2
 from tests import default_config as config
 from tests.testing_harness import TestHarness
@@ -16,7 +18,7 @@ class MCNPHarness(TestHarness):
             self._create_test_lib()
             # Run 1
             self._run_adder()
-            results, exec_skip_lines_1 = self._get_results()
+            results, exec_skip_lines_1 = self._get_outputs()
             self._write_results(results)
             self._compare_results()
 
@@ -28,10 +30,13 @@ class MCNPHarness(TestHarness):
 
             # Now we know that we got the same results, lets just verify that
             # the first pass actually executed mcnp while the second skipped it
+            assert len(exec_skip_lines_1) == 8
             for line in exec_skip_lines_1:
                 assert "Executing MCNP" in line
+            assert len(exec_skip_lines_2) == 8
             for line in exec_skip_lines_2:
                 assert "Skipping MCNP" in line
+
         finally:
             self._cleanup()
 
@@ -54,9 +59,9 @@ class MCNPHarness(TestHarness):
         # Now get from the log whether or not we skipped MCNP
         exec_skip_lines = []
         with open("adder.log", "r") as fin:
-            for line in fin.readline():
+            for line in fin:
                 if "Executing MCNP" in line or "Skipping MCNP" in line:
-                    exec_skip_lines.append(line[30:].ltrim())
+                    exec_skip_lines.append(line[30:].lstrip())
         return outstr, exec_skip_lines
 
     def _run_adder_ff(self):
@@ -91,7 +96,8 @@ class MCNPHarness(TestHarness):
 
             # Now make sure we have the correct data; most direct and
             # concise way is to just compare the depletion matrices
-            test_A = test_lib.build_depletion_matrix(flux).todense()
+            dk_matrix = sp.csr_matrix(test_lib.build_decay_matrix())
+            test_A = test_lib.build_depletion_matrix(flux, dk_matrix).todense()
             np.testing.assert_allclose(ref_A, test_A, rtol=1.e-15)
 
         for name in unmatching:
@@ -100,7 +106,8 @@ class MCNPHarness(TestHarness):
 
             # Now make sure we have the correct data; most direct and
             # concise way is to just compare the depletion matrices
-            test_A = test_lib.build_depletion_matrix(flux).todense()
+            dk_matrix = sp.csr_matrix(test_lib.build_decay_matrix())
+            test_A = test_lib.build_depletion_matrix(flux, dk_matrix).todense()
             # This material doesn't have H1 so the lib doesnt have it
             # either
             assert list(test_lib.isotopes.keys()) == \

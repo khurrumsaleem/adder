@@ -1,0 +1,64 @@
+#!/usr/bin/env python
+case_name = Zero flux case
+neutronics_solver = "MCNP"
+neutronics_exec = mcnp.EXE
+use_depletion_library_xs = False
+neutronics_input_file = test_mcnp_zero_flux.inp
+neutronics_library_file =  ./xsdir
+depletion_exec = origen2.EXE
+depletion_chunksize = 100
+depletion_substeps = 1
+depletion_solver = cram16
+depletion_method = "predictor"
+depletion_library_file = test.h5
+depletion_library_name = test
+output_hdf5 = results.h5
+
+[materials]
+    [[metadata]]
+        [[[item_fuel]]]
+            neutronics_id = 1
+            volume = 1.570796
+            density = 7.419604E-02
+            name = "fuel"
+	[[[item_water]]]
+            neutronics_id = 2
+    	    depleting = False
+            name = "water"
+        [[[item_control]]]
+            neutronics_id = 3
+            non_depleting_isotopes = Al27
+            name = "control_rod"
+
+[universes]
+    [[metadata]]
+        [[[list]]]
+            neutronics_ids = 1, 2, 3, 4
+            names = P1, P2, P3, P4
+        [[supply]]
+            [[[copy]]]
+                [[[[item_ps]]]]
+                    neutronics_id=5
+                    name = PS
+                [[[[item_ps3]]]]
+                    neutronics_id=5
+                    name = PS3
+                [[[[item_ps4]]]]
+                    neutronics_id=5
+                    name = PS4
+
+[control_groups]
+    [[control_rod]]
+        set = 41, 42
+        type = surface
+        axis = z
+
+[operations]
+    [[state 1]]
+        label = "Step 1"
+        [[[write_input_1]]]
+            filename = "state1.inp"
+        [[[deplete]]]
+            powers = 12
+            durations = 1
+            execute_endpoint = False

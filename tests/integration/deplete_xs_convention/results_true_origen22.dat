@@ -1,0 +1,71 @@
+message: xsdir=./xsdir
+
+Simple Lithium-6 depletion Cycle 1; deplete_1: 50.0
+1 1 2.0000000000000E+00 30 1 -2 11 -12 21 -22 vol=1.0 u=0 imp:n=1
+2 2 1.3000000000000E+00 -30 1 -2 vol=3.0 u=0 imp:n=1
+99 0 -1:2:-11:12:-21:22 u=0 imp:n=0
+
+*1 px 0.
+*2 px 10.
+*11 py 0.
+*12 py 10.
+*21 pz 0.
+*22 pz 10.
+30 c/z 5. 5. 1.
+
+c ADDER Material Name: fuel
+m1 92235.70c 1.000000E+00
+c ADDER Material Name: Li6
+m2 3006.70c 1.000000E+00
+PRINT 60 128 130
+PRDMP 0 0 1
+kcode 1000 1.00000 5 35 4500 0 6500 1
+sdef x=d1 y=d2 z=d3 erg=2
+si1 0 10
+sp1 0 1
+si2 0 10
+sp2 0 1
+si3 0 10
+sp3 0 1
+F99999994:N 1 2
+E99999994 20.0
+FC99999994 Flux tally for depletion
+m3 92235.70c 1.
+m4 3006.70c 1.
+F99999984:N 1
+E99999984 2.00000000E+01
+FM99999984:N (1. 3 -6)
+F99999974:N 2
+E99999974 2.00000000E+01
+FM99999974:N (1. 4 105)
+
+message: xsdir=./xsdir
+
+Simple Lithium-6 depletion Cycle 1; deplete_1: 0.0
+1 1 1.6004833582933E+00 30 1 -2 11 -12 21 -22 vol=1.0 u=0 imp:n=1
+2 2 1.2983133473606E+00 -30 1 -2 vol=3.0 u=0 imp:n=1
+99 0 -1:2:-11:12:-21:22 u=0 imp:n=0
+
+*1 px 0.
+*2 px 10.
+*11 py 0.
+*12 py 10.
+*21 pz 0.
+*22 pz 10.
+30 c/z 5. 5. 1.
+
+c ADDER Material Name: fuel
+m1 53135.70c 9.984328E-01 92235.70c 1.567203E-03
+c ADDER Material Name: Li6
+m2 3006.70c 1.000000E+00
+PRINT 60 128 130
+PRDMP 0 0 1
+kcode 1000 1.00000 5 35 4500 0 6500 1
+sdef x=d1 y=d2 z=d3 erg=2
+si1 0 10
+sp1 0 1
+si2 0 10
+sp2 0 1
+si3 0 10
+sp3 0 1
+

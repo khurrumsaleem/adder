@@ -31,6 +31,8 @@ class Universe(object):
     cells : OrderedDict
         The cells contained by this universe; indexed by cell id,
         value is the Cell
+    transform : CoordTransform or None
+        ADDER universe transform. Transferred to new ceels when shuffled.
     nested_materials : OrderedDict
         All nested materials contained in this universe; indexed by cell id,
         and a value of the Material
@@ -48,6 +50,7 @@ class Universe(object):
         self.id = id_
         self.num_copies = 0
         self.cells = OrderedDict()
+        self.transform = None
 
     @property
     def name(self):
@@ -78,7 +81,7 @@ class Universe(object):
     def status(self):
         statuses = [cell.status for cell in self.cells.values()]
 
-        if np.all(np.asarray(statuses) == statuses[0]):
+        if np.all(np.asarray(statuses, dtype=int) == statuses[0]):
             return statuses[0]
         else:
             msg = "Material and/or Universes of Cell {} do not have the" \

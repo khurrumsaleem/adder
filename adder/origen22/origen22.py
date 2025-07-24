@@ -64,13 +64,13 @@ class Origen22Depletion(Depletion):
 
     def compute_library(self, depl_lib, flux):
         """Computes and returns the total library,
-        decay + flux-induces reactions. For ORIGEN this is a lib string,
-        for CRAM this is the sparse matrix"""
+        decay + flux-induces reactions. This method requires that the decay
+        data already be computed via Depletion.compute_decay().
+        For ORIGEN this is a lib string, for CRAM this is the sparse matrix."""
 
-        if self.decay_data is None:
-            self.compute_decay(depl_lib)
         rxn_lib = make_origen_xs_nfy_lib(depl_lib, self.isotope_types, flux)
-        return "".join((zlib.decompress(self.decay_data).decode(), rxn_lib))
+        full_lib = "".join((zlib.decompress(self.decay_data).decode(), rxn_lib))
+        return full_lib
 
     @property
     def solver(self):
@@ -129,12 +129,11 @@ class Origen22Depletion(Depletion):
             all_zero = True
             if xs is not None:
                 for xs_type in sigmas:
-                    val = xs[xs_type]
-                    if val is not None:
+                    idx = xs.get_type_index(xs_type)
+                    if idx is not None:
                         # Then just peel off the 1-group
-                        # (unit flux weighted) xs from the
-                        # (xs, targets_, yields_, q_value) tuple
-                        sigmas[xs_type] = np.sum(val[0])
+                        # (unit flux weighted) xs
+                        sigmas[xs_type] = np.sum(xs.get_xs_by_idx(idx))
                         if sigmas[xs_type] >= 0.:
                             all_zero = False
             # Now do the actinide evaluation
@@ -154,11 +153,12 @@ class Origen22Depletion(Depletion):
                 # Filter out stable isotopes
                 if decay.decay_constant > 0.:
                     # Filter out onnly those with sf decays
-                    if "sf" in decay:
-                        sf_data = decay["sf"]
+                    idx = decay.get_type_index('sf')
+                    if idx is not None:
+                        sf_br = decay.get_br_by_idx(idx)
                         # Make sure the branching ratio isn't 0
                         # the BR is the 0th index of the sf_data tuple
-                        if sf_data[0] > 0.:
+                        if sf_br > 0.:
                             has_sf_decay = True
 
             if nfy is not None and (sigmas['fission'] > 0. or has_sf_decay):
@@ -192,13 +192,16 @@ class Origen22Depletion(Depletion):
                         valid_types = valid_types + ("(n,3n)",)
                     else:
                         valid_types = valid_types + ("(n,a)", "(n,p)")
-                    for xs_type in nxs.keys():
-                        if xs_type in valid_types:
-                            xs, targets, yields, _ = nxs[xs_type]
+                    for xs_type in valid_types:
+                        idx = nxs.get_type_index(xs_type)
+                        if idx is not None:
+                            xs = nxs.get_xs_by_idx(idx)
                             onegrp_xs = np.sum(xs)
                             if onegrp_xs > 0.:
+                                targets, yields_ = \
+                                    nxs.get_targets_and_yields_by_idx(idx)
                                 for t in range(len(targets)):
-                                    if yields[t] > 0.:
+                                    if yields_[t] > 0.:
                                         next_level.add(targets[t])
 
                 # Now do the same for the decays
@@ -209,13 +212,15 @@ class Origen22Depletion(Depletion):
                                    "beta-,n")
                     if dk.decay_constant > 0.:
                         # Now just look for all non-zero yield targets
-                        for dk_type in dk.keys():
-                            # Filter to only the valid rxn types
-                            if dk_type in valid_types:
-                                br, targets, yields = dk[dk_type]
+                        for dk_type in valid_types:
+                            idx = dk.get_type_index(dk_type)
+                            if idx is not None:
+                                br = dk.get_br_by_idx(idx)
                                 if br > 0.:
+                                    targets, yields_ = \
+                                        dk.get_targets_and_yields_by_idx(idx)
                                     for t in range(len(targets)):
-                                        if yields[t] > 0.:
+                                        if yields_[t] > 0.:
                                             next_level.add(targets[t])
                 return next_level
 
@@ -299,9 +304,8 @@ class Origen22Depletion(Depletion):
 
         Returns
         -------
-        new_isos : Iterable of 3-tuple (str, str, bool)
-            A list of the isotope name (str), the xs library (str), and whether
-            it is depleting (bool). There is one of these 3-tuples per isotope.
+        new_isos : np.ndarray
+            The IsotopeRegistry indices of each isotope
         new_fracs : np.ndarray
             A 1-D vector containing the depleted atom fractions for each of
             the isotopes in new_isos

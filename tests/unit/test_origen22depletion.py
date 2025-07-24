@@ -36,7 +36,7 @@ def test_depletion_init():
         test_d = Origen22Depletion(exec_cmd, num_threads, num_procs,
                                    str(chunksize))
     with pytest.raises(ValueError):
-        test_d = Origen22Depletion(exec_cmd, num_threads, num_procs, 0)
+        test_d = Origen22Depletion(exec_cmd, num_threads, num_procs, -1)
 
     # Check that the attributes exist and their values are set correctly
     test_d = Origen22Depletion(exec_cmd, num_threads, num_procs, chunksize)

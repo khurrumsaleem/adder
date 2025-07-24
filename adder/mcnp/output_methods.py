@@ -8,6 +8,10 @@ import mcnptools
 from .constants import *
 from .input_utils import num_format
 from adder.type_checker import *
+from adder.loggedclass import LoggedClass
+
+logger = LoggedClass(0, __name__)
+_INDENT = 15
 
 
 def reverse_readline(filename, buf_size=8192):
@@ -93,8 +97,14 @@ def _extract_results(mctal, tally_ids):
         The requested tallies
     """
 
-    tallies = [mctal.GetTally(i) for i in tally_ids]
-
+    tallies = []
+    for i in tally_ids:
+        # check if user tallies matched with the one in mctal
+        try:
+            value = mctal.GetTally(i)
+            tallies.append(value)
+        except Exception:
+            pass
     return tallies
 
 
@@ -374,7 +384,7 @@ def _get_material_wise_rxn_rates(mctal, nested_cells, flux, tally_map, depl_libs
         for cell_id in cell_set:
             # Get some shorthand objects
             cell = nested_cells[cell_id]
-            mat = cell.material   # Assume mat is depleting and is a real mat
+            mat = cell.material  # Assume mat is depleting and is a real mat
             depl_lib = depl_libs[mat.depl_lib_name]
             cell_flux = flux[mat.id]
             cell_index = cell_bins.index(num_format(cell_id, 'float'))
@@ -387,15 +397,77 @@ def _get_material_wise_rxn_rates(mctal, nested_cells, flux, tally_map, depl_libs
                     for g in range(depl_lib.num_neutron_groups):
                         xs[g] = tally.GetValue(cell_index, tfc, tfc, tfc,
                                                rxn_bin_index, tfc, g, tfc)
-                    # Divide by the flux to yield xs from rxn rate
-                    xs /= cell_flux
+                        if cell_flux[g] != 0:
+                            # Divide by the flux to yield xs from rxn rate.
+                            # if zero flux (group g), rxn rate already zero,
+                            # then no division needed.
+                            xs[g] /= cell_flux[g]
+                        else:
+                            xs[g] = 0
 
                     # Incorporate into the library
                     # We will assume the reaction type already
                     # exists and thus no checking is necessary
                     # Get the reaction tuple
-                    _, targets_, yields_, q_value = \
-                        iso_xs._products[rxn_type]
-                    # Now re-build the tuple with the new yield
-                    iso_xs._products[rxn_type] = \
-                        (xs, targets_, yields_, q_value)
+                    _, targets_yields, q_value = \
+                        iso_xs.get_product_data_by_type(rxn_type)
+                    # Now update the new xs
+                    iso_xs.update_type(rxn_type, xs, targets_yields, q_value)
+
+
+            # check flux zero and info message
+            for g in range(depl_lib.num_neutron_groups):
+                if cell_flux[g] == 0:
+                    msg = f"Zero flux (group {g + 1}) in material {mat.name}: " \
+                          f"flux-weighted cross-sections set to 0. "
+                    logger.log("info", msg, indent=_INDENT)
+
+
+def _get_user_tally_res(mctal, tally_ids):  # user_tallies_list to add
+    """Gets the results for user tallies from the MCTAL file
+    Parameters
+    ----------
+    mctal : mcnptools.Mctal
+        The MCTAL file interface object
+    tally_ids: list
+        List of tally ids to retrieve from the MCTAL file.
+
+    Returns
+    -------
+    user_tallies_res : dict
+        Dictionary where the key corresponds to the following data extracted:
+        tally_matrix, tally_matrix_err, facet_ids.
+    """
+
+    tallies_res = _extract_results(mctal, tally_ids)
+
+    user_tallies_res = {}
+    for tally in tallies_res:
+
+        # getting bins and dimensions for tally matrix. For details, see MCNPtools user guide.
+        fbins, cbins, mbins, sbins, ebins, dbins, ubins, tbins = (
+            tally.GetFBins(), tally.GetCBins(), tally.GetMBins(), tally.GetSBins(), tally.GetEBins(), tally.GetDBins(),
+            tally.GetUBins(), tally.GetTBins())
+        f_dim, d_dim, u_dim, s_dim, m_dim, c_dim, e_dim, t_dim, p_dim = (len(fbins), len(dbins), len(ubins), len(sbins),
+                                                                  len(mbins), len(cbins), len(ebins), len(tbins), 1)
+        p_dim = 1 # pert. number
+        # Create an empty array of the required shape
+        result_array = np.zeros((f_dim, d_dim, u_dim, s_dim, m_dim, c_dim, e_dim, t_dim, p_dim))
+        result_array_err = np.zeros((f_dim, d_dim, u_dim, s_dim, m_dim, c_dim, e_dim, t_dim, p_dim))
+
+        # Fill the array by iterating over all combinations of i, j, k, l using np.ndindex
+        for idx in np.ndindex(f_dim, d_dim, u_dim, s_dim, m_dim, c_dim, e_dim, t_dim, p_dim):
+            f, d, u, s, m, c, e, t, p = idx  # unpack the index tuple
+            result_array[f, d, u, s, m, c, e, t, p] = tally.GetValue(f, d, u, s, m, c, e, t, p)
+            result_array_err[f, d, u, s, m, c, e, t, p] = tally.GetError(f, d, u, s, m, c, e, t, p)
+
+        # assign values to tally id
+        id = tally.ID()
+        user_tallies_res[id] = {}
+        user_tallies_res[id]["tally_matrix"] = result_array
+        user_tallies_res[id]["tally_matrix_err"] = result_array_err
+        user_tallies_res[id]["facet_ids"] = tally.GetFBins()
+
+    # user_tally = [10, 20, 30]
+    return user_tallies_res
+

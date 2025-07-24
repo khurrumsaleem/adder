@@ -54,6 +54,7 @@ m43 92235.70c 1.
 F99999984:N 11 12
 E99999984 2.00000000E+01
 FM99999984:N (1. 43 -6)
+c User tallies
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20
 
 message: xsdir=./xsdir
@@ -116,6 +117,7 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
+c User tallies
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20
 
 message: xsdir=./xsdir
@@ -178,6 +180,7 @@ sp3 0 1
 F99999994:N 11 12 21 22 31 32 41 42
 E99999994 20.0
 FC99999994 Flux tally for depletion
+c User tallies
 FMESH4:n ORIGIN=0,0,0 IMESH=10,20 JMESH=10,20 KMESH=10,20
 
 message: xsdir=./xsdir

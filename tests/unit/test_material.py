@@ -145,8 +145,10 @@ def test_material_init():
                               num_groups, thermal_xs_libraries, status)
     assert test_mat.name == name
     assert test_mat.id == mat_id
+    assert test_mat.parent_id == None
     assert test_mat.density == density
-    for i, test_iso in enumerate(test_mat.isotopes):
+    for i in range(test_mat.num_isotopes):
+        test_iso = test_mat.isotope_obj(i)
         assert test_iso.name == isotope_data[i][0]
         assert test_iso.xs_library == isotope_data[i][1]
     np.testing.assert_array_equal(test_mat.atom_fractions, [0.4, 0.5, 0.1])
@@ -154,7 +156,7 @@ def test_material_init():
     assert test_mat.default_xs_library == default_xs_library
     assert test_mat.num_groups == num_groups
     assert test_mat.thermal_xs_libraries == thermal_xs_libraries
-    assert test_mat.isotopes_in_neutronics == [True, True, True]
+    assert np.all(test_mat.isotopes_in_neutronics == True)
     assert test_mat.volume is None
     np.testing.assert_array_equal(test_mat.flux, np.zeros(1))
     assert test_mat.Q == 0.
@@ -254,8 +256,10 @@ def test_material_clone(simple_lib):
     # Now verify the clone
     assert test_mat.name == new_name
     assert test_mat.id == 2
+    assert test_mat.parent_id == 1
     assert test_mat.density == density
-    for i, test_iso in enumerate(test_mat.isotopes):
+    for i in range(test_mat.num_isotopes):
+        test_iso = test_mat.isotope_obj(i)
         assert test_iso.name == isotope_data[i][0]
         assert test_iso.xs_library == isotope_data[i][1]
     np.testing.assert_array_equal(test_mat.atom_fractions, [0.4, 0.5, 0.1])
@@ -263,7 +267,7 @@ def test_material_clone(simple_lib):
     assert test_mat.default_xs_library == default_xs_library
     assert test_mat.num_groups == num_groups
     assert test_mat.thermal_xs_libraries == thermal_xs_libraries
-    assert test_mat.isotopes_in_neutronics == [True, True, True]
+    assert np.all(test_mat.isotopes_in_neutronics == True)
     assert test_mat.volume is None
     np.testing.assert_array_equal(test_mat.flux, np.zeros(1))
     assert test_mat.Q == 0.
@@ -313,7 +317,8 @@ def test_material_update_isotope_is_depleting(simple_lib):
 
     # Verify by checking the isotopes' status hasn't changed from what
     # we initialized it to
-    for i, iso in enumerate(test_mat.isotopes):
+    for i in range(test_mat.num_isotopes):
+        iso = test_mat.isotope_obj(i)
         assert iso.is_depleting == isotope_data[i][-1]
 
     # Ok, now assign the depletion library to be a clone of simple_lib
@@ -327,7 +332,8 @@ def test_material_update_isotope_is_depleting(simple_lib):
     # Since simple_lib does not include H1, we should see that H1 is now
     # non-depleting
     isotope_data[0] = ("H1", "70c", False)
-    for i, iso in enumerate(test_mat.isotopes):
+    for i in range(test_mat.num_isotopes):
+        iso = test_mat.isotope_obj(i)
         assert iso.is_depleting == isotope_data[i][-1]
     # We should also see the info that H1 was changed
     assert len(test_mat.logs) == 1
@@ -336,7 +342,7 @@ def test_material_update_isotope_is_depleting(simple_lib):
     # a stable, zero xs H1
     assert "H1" in new_lib.isotopes.keys()
     iso_lib = new_lib.isotopes["H1"]
-    np.testing.assert_array_equal(iso_lib.get_total_removal_xs("b"), [0.])
+    np.testing.assert_array_equal(iso_lib.get_total_removal_xs("b"), None)
     np.testing.assert_array_equal(iso_lib.get_total_decay_const("s"), [0.])
 
 
@@ -413,7 +419,8 @@ def test_material_determine_important_isotopes(simple_lib, simple_lib_h1u234):
     # neutronics except for ones with concentrations less tan 1E-10
     # (so U238 should be considered not in neutronics)
     test_mat.determine_important_isotopes(lib)
-    assert test_mat.isotopes_in_neutronics == [True, True, False]
+    assert np.array_equal(test_mat.isotopes_in_neutronics,
+                          np.array([True, True, False], dtype=np.bool_))
 
     # Now we need to have a flux so we can step through the rest of
     # the function
@@ -423,14 +430,15 @@ def test_material_determine_important_isotopes(simple_lib, simple_lib_h1u234):
     # U235 will be because its important, and U238 is at such a low
     # concentration that it will not be. Therefore, the
     # isotopes to neglect will be the same as in the test block above
-    assert test_mat.isotopes_in_neutronics == [True, True, False]
+    assert np.array_equal(test_mat.isotopes_in_neutronics,
+                          np.array([True, True, False], dtype=np.bool_))
 
     # Finally we run the exact same case but now we tell it that U238 must be
     # kept in the model no matter what. Therefore we expect the corresponding
     # value in test_mat.isotopes_in_neutronics to be True.
     test_mat.isotopes_to_keep_in_model = {'U238'}
     test_mat.determine_important_isotopes(lib)
-    assert test_mat.isotopes_in_neutronics == [True, True, True]
+    assert np.all(test_mat.isotopes_in_neutronics == True)
 
     # Now lets repeat with a purely absorbing material
     # Create a material to test
@@ -455,11 +463,12 @@ def test_material_determine_important_isotopes(simple_lib, simple_lib_h1u234):
 
     # Before we go ahead, prove that test_mat.isotopes_in_neutronics
     # is all true
-    assert all(test_mat.isotopes_in_neutronics)
+    assert np.all(test_mat.isotopes_in_neutronics == True)
 
     # Now we expect that U234 will not be included but H1 will be. Lets check
     test_mat.determine_important_isotopes(lib)
-    assert test_mat.isotopes_in_neutronics == [True, False]
+    assert np.array_equal(test_mat.isotopes_in_neutronics,
+                          np.array([True, False], dtype=np.bool_))
 
 
 def test_material_number_density_vectors(simple_lib):
@@ -546,6 +555,10 @@ def test_material_hdf5(simple_lib):
     thermal_xs_libraries = []
     flux = np.array([10.])
     volume = 2.
+    power_density = flux.sum() * 200. * 1e18 * 1.6021766208e-19 * 1.0e6 \
+                    / volume
+    burnup = power_density * volume * 1e-6 * 3.
+    fission_density = 10 * 1e18 * 3. * 86400 / volume
     status = adder.constants.IN_CORE
 
     # initialize the material and write it to an hdf5 file
@@ -554,6 +567,9 @@ def test_material_hdf5(simple_lib):
                               num_groups, thermal_xs_libraries, status)
     init_mat.flux = flux
     init_mat.volume = volume
+    init_mat.power_density = power_density
+    init_mat.burnup = burnup
+    init_mat.fission_density = fission_density
 
     # Clone material an arbitrary number of times n_clones
     # to test the num_copies attribute
@@ -574,7 +590,8 @@ def test_material_hdf5(simple_lib):
     assert test_mat.name == name
     assert test_mat.id == mat_id
     assert test_mat.density == density
-    for i, test_iso in enumerate(test_mat.isotopes):
+    for i in range(test_mat.num_isotopes):
+        test_iso = test_mat.isotope_obj(i)
         assert test_iso.name == isotope_data[i][0]
         assert test_iso.xs_library == isotope_data[i][1]
     np.testing.assert_array_equal(test_mat.atom_fractions, [0.4, 0.5, 0.1])
@@ -582,9 +599,12 @@ def test_material_hdf5(simple_lib):
     assert test_mat.default_xs_library == default_xs_library
     assert test_mat.num_groups == num_groups
     assert test_mat.thermal_xs_libraries == thermal_xs_libraries
-    assert test_mat.isotopes_in_neutronics == [True, True, True]
+    assert np.all(test_mat.isotopes_in_neutronics == True)
     assert test_mat.volume == volume
     np.testing.assert_array_equal(test_mat.flux, flux)
+    assert test_mat.power_density == power_density
+    assert test_mat.burnup == burnup
+    assert test_mat.fission_density == fission_density
     assert test_mat.Q == 0.
     ref_N = np.array([0.4, 0.5, 0.1]) * 2. * 1.E24
     np.testing.assert_array_equal(test_mat.number_densities, ref_N)

@@ -16,12 +16,13 @@ import adder.cram as cram
 from adder.depletionlibrary import DepletionLibrary
 from adder.msr import MSRDepletion
 from adder.material import Material
+from adder.mcnp.tally import Tally
 from adder.neutronics import Neutronics
 from adder.depletion import Depletion
 from adder.type_checker import *
 from adder.control_group import ControlGroup
 from adder.utils import get_transform_args
-from adder.isotope import isotope_factory
+import adder.isotope
 
 
 class Reactor(LoggedClass):
@@ -114,10 +115,22 @@ class Reactor(LoggedClass):
         The standard deviation of the calculated k-eigenvalue for the
         current state point; value is 0.0 if a deterministic solver is
         used.
+    nu : float
+        Average number of neutrons per fission (if power > 0)
+    flux_normalization : float
+        Flux normalization factor if power set for depletion step
+        (otherwise = 1.0)
+    power_renormalization : float
+        Power re-normalization factor if renormalize_power_density flag is
+        set to True (otherwise = 1.0)
     control_groups : dict
         The set of control group information from the input file, including
         the current perturbation status. The key to the dict is the name and
         the value is an instance of a ControlGroup object.
+    user_tallies_adder_i : dict
+        The dict containing the information read from the ADDER input for user tallies
+    user_tally_res : dict
+        The dict containing the information read from the mctal output file for user tallies
     fast_forward : bool
         Whether this is a fast forward run (True) or not (False).
     """
@@ -157,8 +170,13 @@ class Reactor(LoggedClass):
         self.Q_recoverable = 200.0
         self.keff = 0.0
         self.keff_stddev = 0.0
+        self.nu = 0.0
+        self.flux_normalization = 1.0
+        self.power_renormalization = 1.0
         self.materials = None
         self.control_groups = {}
+        self.user_tallies_adder_i = {}
+        self.user_tally_res = {}
         self.fast_forward = False
 
         self.end_time = None
@@ -195,6 +213,25 @@ class Reactor(LoggedClass):
         self._depletion = depletion
 
     @property
+    def depletion_libs(self):
+        return self._depletion_libs
+
+    @depletion_libs.setter
+    def depletion_libs(self, libs):
+        check_type("depletion_libs", libs, dict)
+        self._depletion_libs = libs
+        # For our parallel region to be efficient, we do not want to have
+        # pickling of our massive data for each parallel region. Instead, if
+        # we make the libraries be globally accessible, then the Linux OS will
+        # use a copy-on-write technique so that no actual copies are done unless
+        # we write to the objects. We don't plan on writing these in the
+        # parallel region so that is fine. The items to pass to the library are
+        # the material and depletion libs.
+        global global_libs
+        global_libs = self._depletion_libs
+
+
+    @property
     def materials(self):
         return self._materials
 
@@ -204,6 +241,15 @@ class Reactor(LoggedClass):
             check_iterable_type("materials", materials, Material,
                                 min_depth=1, max_depth=1)
         self._materials = materials
+        # For our parallel region to be efficient, we do not want to have
+        # pickling of our massive data for each parallel region. Instead, if
+        # we make the libraries be globally accessible, then the Linux OS will
+        # use a copy-on-write technique so that no actual copies are done unless
+        # we write to the objects. We don't plan on writing these in the
+        # parallel region so that is fine. The items to pass to the library are
+        # the material and depletion libs.
+        global global_mats
+        global_mats = self._materials
 
     @property
     def h5_filename(self):
@@ -314,6 +360,33 @@ class Reactor(LoggedClass):
         self._keff_stddev = keff_stddev
 
     @property
+    def nu(self):
+        return self._nu
+
+    @nu.setter
+    def nu(self, nu):
+        check_type("nu", nu, float)
+        self._nu = nu
+
+    @property
+    def flux_normalization(self):
+        return self._flux_normalization
+
+    @flux_normalization.setter
+    def flux_normalization(self, flux_normalization):
+        check_type("flux_normalization", flux_normalization, float)
+        self._flux_normalization = flux_normalization
+
+    @property
+    def power_renormalization(self):
+        return self._power_renormalization
+
+    @power_renormalization.setter
+    def power_renormalization(self, power_renormalization):
+        check_type("power_renormalization", power_renormalization, float)
+        self._power_renormalization = power_renormalization
+
+    @property
     def control_groups(self):
         return self._control_groups
 
@@ -321,6 +394,24 @@ class Reactor(LoggedClass):
     def control_groups(self, control_groups):
         check_type("control_groups", control_groups, dict)
         self._control_groups = control_groups
+
+    @property
+    def user_tallies_adder_i(self):
+        return self._user_tallies_adder_i
+
+    @user_tallies_adder_i.setter
+    def user_tallies_adder_i(self, user_tallies_adder_i):
+        check_type("user_tallies_adder_i", user_tallies_adder_i, dict)
+        self._user_tallies_adder_i = user_tallies_adder_i
+
+    @property
+    def user_tally_res(self):
+        return self._user_tally_res
+
+    @user_tally_res.setter
+    def user_tally_res(self, user_tally_res):
+        check_type("user_tally_res", user_tally_res, dict)
+        self._user_tally_res = user_tally_res
 
     @property
     def total_volume(self):
@@ -340,17 +431,20 @@ class Reactor(LoggedClass):
         self.h5_file = h5py.File(self.h5_filename, "w", libver="latest")
 
         # Set the filetype and version
-        self.h5_file.attrs['filetype'] = np.string_(FILETYPE_REACTOR_H5)
+        self.h5_file.attrs['filetype'] = np.bytes_(FILETYPE_REACTOR_H5)
         self.h5_file.attrs['version'] = [VERSION_REACTOR_H5, 0]
 
         # Store the runtime options as root attributes
-        self.h5_file.attrs["name"] = np.string_(self.name)
+        self.h5_file.attrs["name"] = np.bytes_(self.name)
         self.neutronics.init_h5_file(self.h5_file)
         self.depletion.init_h5_file(self.h5_file)
 
         self.h5_file.attrs["begin_time"] = \
-            np.string_(self.begin_time.strftime(TIME_STRINGF))
+            np.bytes_(self.begin_time.strftime(TIME_STRINGF))
         self.h5_initialized = True
+
+        # TODO: Should add Isotope Registry to file before implementing a full
+        # restart capability
 
     def _open_h5(self):
         if self.h5_initialized:
@@ -376,8 +470,8 @@ class Reactor(LoggedClass):
 
         # Create the group and assign attributes
         group = self.h5_file.create_group(group_name)
-        group.attrs["case_label"] = np.string_(self.case_label)
-        group.attrs["operation_label"] = np.string_(self.operation_label)
+        group.attrs["case_label"] = np.bytes_(self.case_label)
+        group.attrs["operation_label"] = np.bytes_(self.operation_label)
         group.attrs["step_idx"] = self.step_idx
         group.attrs["time"] = self.time
         group.attrs["power"] = self.power
@@ -385,14 +479,34 @@ class Reactor(LoggedClass):
         group.attrs["Q_recoverable"] = self.Q_recoverable
         group.attrs["keff"] = self.keff
         group.attrs["keff_stddev"] = self.keff_stddev
+        group.attrs["nu"] = self.nu
+        group.attrs["flux_normalization"] = self.flux_normalization 
+        group.attrs["power_renormalization"] = self.power_renormalization
         end_time = datetime.datetime.now()
         group.attrs["step_end_time"] = \
-            np.string_(end_time.strftime(TIME_STRINGF))
+            np.bytes_(end_time.strftime(TIME_STRINGF))
 
         # Materials info
         mats_group = group.create_group("materials")
+        # write dataset material
         for material in self.materials:
             material.to_hdf5(mats_group)
+
+        # Tallies info
+        # write dataset tallies
+        tallies_group = group.create_group("user_tallies")
+        if "user_tallies" in self.neutronics.__dir__():
+            for tally_id in self.neutronics.user_tallies.keys():
+                if tally_id not in self.user_tally_res.keys():
+                    # assignment of empty values to tally not simulated in MCNP
+                    self.neutronics.user_tallies[tally_id].tally_block = []
+                    self.neutronics.user_tallies[tally_id].facet_ids = []
+                    self.neutronics.user_tallies[tally_id].tally_matrix = np.array([])
+                    self.neutronics.user_tallies[tally_id].tally_matrix_err = np.array([])
+                # each tally, simulated or not, is saved into HDF5 file
+                self.neutronics.user_tallies[tally_id].to_hdf5(tallies_group)
+            self.user_tally_res = {}
+
 
         # Control group info
         ctrl_group = group.create_group("control_groups")
@@ -409,7 +523,7 @@ class Reactor(LoggedClass):
         # Finalize H5
         self._open_h5()
         self.h5_file.attrs["end_time"] = \
-            np.string_(self.end_time.strftime(TIME_STRINGF))
+            np.bytes_(self.end_time.strftime(TIME_STRINGF))
         self.h5_file.close()
 
     def _flux_scaling_constant(self, nu, keff, use_power):
@@ -459,7 +573,7 @@ class Reactor(LoggedClass):
 
         return C
 
-    def _update_material_fluxes(self, flux, nu, keff, use_power):
+    def _update_material_fluxes(self, flux, nu, keff, use_power, is_zero_power):
         """Given a fluxes array, this method sets the fluxes within
         each current material object
 
@@ -475,37 +589,150 @@ class Reactor(LoggedClass):
             solve.
         use_power : bool
             Whether or not to use power (True) or flux (False).
+        is_zero_power : bool
+            Whether this is a zero power step (True) or not (False).
         """
 
-        zero_power = False
         if use_power:
-            if self.power == 0.:
-                zero_power = True
             # Reset the flux level attribute so we can accumulate it
             # here
             self.flux_level = 0.
-        else:
-            if self.flux_level == 0.:
-                zero_power = True
 
-        if not zero_power:
+        if not is_zero_power:
             flux_scaling = self._flux_scaling_constant(nu, keff, use_power)
+        else:
+            flux_scaling = 0.0
 
         for material in self.materials:
             if material.is_depleting and material.status == IN_CORE:
-                if not zero_power:
+                if not is_zero_power:
                     material.flux = flux[material.id] * flux_scaling
                 else:
                     material.flux = np.zeros(material.num_groups)
-                if use_power and not zero_power:
+                if use_power and not is_zero_power:
                     # Then we need to update the total flux level
                     self.flux_level += material.flux_1g * material.volume
             else:
                 material.flux = np.zeros(material.num_groups)
 
         # The last step is to normalize flux level by the total volume
-        if use_power and not zero_power:
+        if use_power and not is_zero_power:
             self.flux_level /= self.total_volume
+
+        # Update constants and normalizations
+        self.nu = nu
+        self.flux_normalization = flux_scaling
+
+    def _update_user_tallies(self, user_tally_res):
+        """Given the results read and processed from mctal, this method sets for tally objects
+        material_names, universe_names, facet_ids, tally_matrix and tally_matrix_err
+        Parameters
+        ----------
+        user_tally_res: dict
+        The results for user tallies, where the key is the tally id and nested dictionaries contain the results.
+        Tally results are normalized according to the flux normalization.
+        """
+
+        for tally_id in user_tally_res.keys():
+            self.neutronics.user_tallies[tally_id].tally_matrix = user_tally_res[tally_id]["tally_matrix"] * \
+                                                                  self.flux_normalization
+            self.neutronics.user_tallies[tally_id].tally_matrix_err = user_tally_res[tally_id]["tally_matrix_err"]
+            self.neutronics.user_tallies[tally_id].facet_ids = user_tally_res[tally_id]["facet_ids"]
+            self.neutronics.user_tallies[tally_id].material_names = user_tally_res[tally_id]["material_names"]
+            self.neutronics.user_tallies[tally_id].universe_names = user_tally_res[tally_id]["universe_names"]
+
+
+
+
+    def _update_material_fission_quantities(self, dt, 
+            renormalize_power_density=False):
+        """Given a depletion step duration, this method calculates the
+        power density (in W/cm3), fission density (in fissions/cm3) and
+        burnup (in MWd) for every material.
+
+        Parameters
+        ----------
+        dt : float
+            Duration (in days) of the depletion step, used to calculated
+            fission density and burnup
+        renormalize_power_density : bool, optional
+            If True, power density is renormalized to total input power
+        """
+        
+        reactor_power_check = 0.0
+        step_fiss_density = np.zeros(len(self.materials))
+
+        # Loop through materials and calculate fission-Q and fission rate 
+        for imat, material in enumerate(self.materials):
+            material_power = 0.0
+            material.power_density = 0.0
+            if material.is_depleting and material.status == IN_CORE:
+                # The flux has already been updated, so it only checks total
+                if self.flux_level > 0.0:
+                    # Calculate power density and fission density
+                    lib = self.depletion_libs[material.depl_lib_name]
+                    tot_Q, tot_fiss_rate = material.compute_Q(lib) 
+                    # Get power in MeV/s, convert to MW, divide by volume
+                    # to get power density in W/cm3
+                    material_power = tot_Q * JOULE_PER_EV
+                    reactor_power_check += material_power
+                    material.power_density = material_power * EV_PER_MEV \
+                                           / material.volume 
+                    # Calculate material fission density
+                    step_fiss_density[imat] = tot_fiss_rate * \
+                        dt * SECONDS_PER_DAY / material.volume
+                else:
+                    # Power density is 0
+                    # Fission density and burnup are unchanged
+                    material.power_density = 0.0
+        
+        # Calculate rel. diff. to input reactor power (if >0)
+        power_rel_diff = abs(reactor_power_check/self.power-1.) \
+                         if self.power else 0.0
+
+        # Now get re-normalization factor
+        norm_factor = 1.
+        if renormalize_power_density and self.power > 0.0:
+            norm_factor = self.power / reactor_power_check
+
+        # Provide user warnings
+        msgs = []
+        if power_rel_diff > POWER_PRECISION:
+            # If the cross-sections were *NOT* calculated notify user
+            if self.neutronics.use_depletion_library_xs:  
+                msgs.append("XS not updated at this step")
+            if renormalize_power_density:
+                # Warn user of the re-normalization
+                msg = "Power re-normalized from" + \
+                     f" {reactor_power_check:.2f} MW to" + \
+                     f" {self.power:.2f} MW"
+                msgs.append(msg)
+                msgs.append(f"  ({power_rel_diff*100.0:.2f}% diff.)")
+            else:
+                # Warn user of the power difference
+                msg = "Calculated power sums to" + \
+                     f" {reactor_power_check:.2f} MW," + \
+                     f" input power is {self.power:.2f} MW" 
+                msgs.append(msg)
+                msgs.append(f"  ({power_rel_diff*100.0:.2f}% diff.)")
+            for msg in msgs:
+                self.log("warning", msg, 10)
+
+        # Loop through materials to update power density and calculate burnup
+        reactor_power_check = 0
+        reactor_burnup_check = 0
+        for imat, material in enumerate(self.materials):
+            if step_fiss_density[imat]:
+                material.power_density *= norm_factor
+                material_power = \
+                    material.power_density * material.volume / EV_PER_MEV
+                material.fission_density += step_fiss_density[imat]
+                material.burnup += material_power * dt
+                reactor_power_check += material_power
+                reactor_burnup_check += material.burnup
+
+        # Record power renormalization factor
+        self.power_renormalization = norm_factor
 
     def _update_Q_recoverable(self):
         """Updates the recoverable energy from fission
@@ -524,6 +751,8 @@ class Reactor(LoggedClass):
                     self.log("error", msg.format(material.name))
                 lib = self.depletion_libs[material.depl_lib_name]
                 mat_Q, mat_fiss_rate = material.compute_Q(lib)
+                self.update_logs(material.logs)
+                material.clear_logs()
                 tot_Q += mat_Q
                 tot_fiss_rate += mat_fiss_rate
 
@@ -533,14 +762,16 @@ class Reactor(LoggedClass):
         else:
             self.Q_recoverable = 0.
 
-    def _update_depletion_constants(self, flux, nu, keff, use_power, volumes):
+
+    def _update_depletion_constants(self, flux, nu, keff, use_power, volumes, user_tally_res,
+                          is_zero_power, dt, renormalize_power_density=False):
         """This method calculates Q_recoverable, scales and sets the
         fluxes for each material object.
 
         Parameters
         ----------
         flux : OrderedDict of np.ndarray
-            Dictionay where the key is the material id and the value is
+            Dictionary where the key is the material id and the value is
             the calculated group-wise flux for each material instance.
         nu : float
             Average number of neutrons produced per fission.
@@ -551,6 +782,18 @@ class Reactor(LoggedClass):
             Whether or not to use power (True) or flux (False).
         volumes : OrderedDict
             The material id is the key, the value is the volume in cm^3
+        user_tally_res : OrderedDict
+            The results for user tallies, listed for tally ids and for each
+            tally id: - multi-dimensional array with results,
+                      - cell ids, material ids, material names, related to the components
+                        "followed" by the tally
+        is_zero_power : bool
+            Whether this is a zero power step (True) or not (False).
+        dt : float
+            Duration of the depletion time step, used to calculated
+            fission densities and burnup values
+        renormalize_power_density : bool, optional
+            If True, power density is renormalized to total input power
         """
 
         # The fluxes are to be set using the scaling factor, and the
@@ -573,11 +816,20 @@ class Reactor(LoggedClass):
                 # Do it for every instance of the material in the model
                 material.volume = volumes[material.id]
 
-        # Now compute Q
-        self._update_Q_recoverable()
+        # Now compute Q if not a zero power step or simply set to zero otherwise
+        if is_zero_power:
+            self.Q_recoverable = 0.
+        else:
+            self._update_Q_recoverable()
 
         # Now we can determine the scaling factor and set the flux
-        self._update_material_fluxes(flux, nu, keff, use_power)
+        self._update_material_fluxes(flux, nu, keff, use_power, is_zero_power)
+        self._update_material_fission_quantities(dt,
+            renormalize_power_density=renormalize_power_density)
+
+        # Now update tallies
+        if "user_tallies" in self.neutronics.__dir__():
+            self._update_user_tallies(user_tally_res)
 
     def init_library(self, filename, library_name):
         """Initializes the depletion library
@@ -610,7 +862,7 @@ class Reactor(LoggedClass):
         for msg in msgs:
             self.log("info_file", msg, None)
 
-    def init_materials_and_input(self, neutronics_lib_file, depletion_lib_file,
+    def   init_materials_and_input(self, neutronics_lib_file, depletion_lib_file,
                                  depletion_lib_name, user_mats_info,
                                  user_univ_info, shuffled_mats, shuffled_univs):
         """Reads the base neutronics input file, stores the parsed
@@ -633,7 +885,9 @@ class Reactor(LoggedClass):
         user_mats_info : OrderedDict
             The keys are the ids in the neutronics solver and
             the value is an OrderedDict of the name, depleting boolean,
-            ex_core_status, and non_depleting_isotopes list.
+            volume, density, non_depleting_isotopes list, 
+            apply_reactivity_threshold_to_initial_inventory flag, and 
+            use_default_depletion_library flag.
         user_univ_info : OrderedDict
             The keys are the universe ids in the neutronics solver and
             the value is an OrderedDict of the name.
@@ -650,17 +904,26 @@ class Reactor(LoggedClass):
         check_type("user_mats_info", user_mats_info, OrderedDict)
         check_type("user_univ_info", user_univ_info, OrderedDict)
 
-        # Initialize the library information
+        # Initialize the depletion library information
         self.init_library(depletion_lib_file, depletion_lib_name)
         default_depl_lib = self.depletion_libs[BASE_LIB]
 
         # Define the materials and other information from the neutronics
         # model definitinon
         self.log("info", "Processing Neutronics Input", 4)
+        neutronics_library_isos = self.neutronics.parse_library(
+            neutronics_lib_file)
+
+        # Set up the isotope registry [we do this after printing
+        # Processing Neutronics Input bc self.neutronics.parse_library does the
+        # input parsing and that can take a while, but we need to do before
+        # self.neutronics.read_input too]
+        adder.isotope.ISO_REGISTRY = \
+            adder.isotope.IsotopeRegistry(neutronics_library_isos)
+
         materials = self.neutronics.read_input(
-            neutronics_lib_file, default_depl_lib.num_neutron_groups,
-            user_mats_info, user_univ_info, shuffled_mats, shuffled_univs,
-            self.depletion_libs)
+            default_depl_lib.num_neutron_groups, user_mats_info,
+            user_univ_info, shuffled_mats, shuffled_univs, self.depletion_libs)
 
         # Now add the materials to the Reactor class
         self.materials = materials
@@ -681,18 +944,49 @@ class Reactor(LoggedClass):
                     pass
         self.log_materials()
 
+        # Finally ensure the isotope registry has the depletion library info
+        # for each and every type of isotope we expect
+        adder.isotope.ISO_REGISTRY.register_depletion_lib_isos(
+            self.depletion_libs, self.materials)
+
+    def validate_storage_materials(self):
+        """Cycle through the materials list and check whether there are any 
+        storage materials that:
+        - have no density assigned: ADDER should exit with an error
+        - have no unique depletion library assigned: this is all the supply
+            materials that are re-defined as storage in the ADDER input file 
+        Materials are modified in place.
+        """
+        # Cycle through materials
+        for mat in self.materials:
+            if mat.status == STORAGE:
+                # Check if density was assigned to material
+                if not mat.density:
+                    # Error: storage element without a density value assigned
+                    msg = f"Storage material {mat.name} was not assigned a "\
+                           "density in the ADDER input file"
+                    self.log("error", msg)
+                # Initialize depletion libraries for storage materials
+                elif (not self.neutronics.use_depletion_library_xs and
+                    not mat.is_default_depletion_library):
+                    default_depl_lib = self.depletion_libs[BASE_LIB]
+                    new_lib = default_depl_lib.clone(new_name=mat.name)
+                    self.depletion_libs[new_lib.name] = new_lib
+                    mat.depl_lib_name = new_lib.name
+
     def _parallel_depletion_manager(self, dt, depletion_step, num_substeps):
         """Executes the depletion in parallel"""
 
         if dt <= 0.:
             return
 
-        # Gather an iterator of all of the materials to deplete
-        depl_mats = ((i, mat, self.depletion_libs[mat.depl_lib_name])
-                     for i, mat in enumerate(self.materials) if
-                     (mat.is_depleting and mat.status != SUPPLY))
+        # Determine the number of depleting materials
+        num_depl_mats = len(list((i for i, mat in enumerate(self._materials) if
+                                  (mat.is_depleting and
+                                   mat.status != adder.constants.SUPPLY))))
+
         msg = "Depleting {:,} Materials with {} Thread".format(
-            len(self.materials), self.depletion.num_threads)
+            num_depl_mats, self.depletion.num_threads)
         if self.depletion.num_threads > 1:
             # Make it plural
             msg += "s"
@@ -704,72 +998,76 @@ class Reactor(LoggedClass):
         # every time
         self.depletion.compute_decay(self.depletion_libs[BASE_LIB])
 
-        # Compute the actual libraries
-        self.log("info", "Computing Libraries", 10)
-        data = []
-        weak_deplete = weakref.proxy(self.depletion)
-        args_list = ((i, weak_deplete, mat.flux, lib)
-                     for i, mat, lib in depl_mats)
-        if self.depletion.num_threads == 1:
-            for args in args_list:
-                i, mtx, idxs, inv_idxs = library_worker(args)
-                data.append((i, self.materials[i], mtx, idxs, inv_idxs))
-        else:
-            chunksize = self.depletion.chunksize
-            tasksperchild = 1
-            with mp.Pool(processes=self.depletion.num_threads,
-                         maxtasksperchild=tasksperchild) as pool:
-                for i, mtx, idxs, inv_idxs in pool.imap(library_worker,
-                                                        args_list,
-                                                        chunksize=chunksize):
-                    data.append((i, self.materials[i], mtx, idxs, inv_idxs))
-
+        # Perform the depletion
         self.log("info", "Executing Depletion", 10)
-        # Provide single-threaded case for debugging
+        weak_deplete = weakref.proxy(self.depletion)
+        mat_idxs = (i for i, mat in enumerate(self._materials) if
+                    (mat.is_depleting and mat.status != adder.constants.SUPPLY))
         if self.depletion.num_threads == 1:
-            for i, mat, mtx, idxs, inv_idxs in data:
+            for i_mat in mat_idxs:
+                mat = self._materials[i_mat]
+                flux = mat.flux
+                lib = self.depletion_libs[mat.depl_lib_name]
+                matrix = weak_deplete.compute_library(lib, flux)
+
                 try:
                     new_isos, new_fracs, new_density = \
-                        self.depletion.execute(
-                            mat, mtx, idxs, inv_idxs, dt,
-                            depletion_step, num_substeps, True)
+                        weak_deplete.execute(mat, matrix,
+                                             lib.isotope_indices,
+                                             lib.inverse_isotope_indices, dt,
+                                             depletion_step, num_substeps,
+                                             True)
                 except Exception:
                     error_msg = traceback.format_exc()
-                    self.log("error", error_msg)
-                mat.apply_new_composition(new_isos, new_fracs, new_density)
+                    print(error_msg)
+                self._materials[i_mat].apply_new_composition(
+                    new_isos, new_fracs, new_density)
         else:
-            # Do the parallel processing of depletion
+
+            # Calculate chunksize
+            if weak_deplete.chunksize == 0:
+                chunksize, extra = divmod(num_depl_mats,
+                                    weak_deplete.num_threads * CHUNKSIZE_FACTOR)
+                if extra:
+                    chunksize += 1
+
+                # Check to make sure chunksize is an integer greater than zero
+                chunksize = int(chunksize)
+                if chunksize < 1:
+                    chunksize = 1
+
+            else:
+                chunksize = weak_deplete.chunksize
+
+            # Do the parallel processing
             errors = []
-            chunksize = self.depletion.chunksize
-            tasksperchild = 1
+
             with mp.Pool(
-                    processes=self.depletion.num_threads,
-                    initializer=par_depl_init,
-                    initargs=(weak_deplete, dt, depletion_step, num_substeps),
-                    maxtasksperchild=tasksperchild) as pool:
-                for i, new_isos, new_fracs, new_density \
-                    in pool.imap_unordered(depletion_worker, data,
+                processes=weak_deplete.num_threads,
+                initializer=parallel_init,
+                initargs=(weak_deplete, dt, depletion_step, num_substeps)) as pool:
+                for i_mat, new_isos, new_fracs, new_density \
+                    in pool.imap_unordered(parallel_worker, mat_idxs,
                                            chunksize=chunksize):
                     if isinstance(new_isos, str):
-                        errors.append((i, new_isos))
+                        errors.append((i_mat, new_isos))
                     else:
-                        self.materials[i].apply_new_composition(
+                        self._materials[i_mat].apply_new_composition(
                             new_isos, new_fracs, new_density)
 
             # Now we handle the errors. They *may* be due to parallel system
-            # issues (file I/O, etc), so lets just run the few cases in
-            # parallel
+            # issues (file I/O, etc), so lets just run the few cases in serial
             if len(errors) > 0:
                 # Now raise the error messages
                 msg = "The Following Materials Encountered Errors While " + \
                     "Processed in Parallel:"
                 self.log("info_file", msg)
-                for i, error in errors:
+                for i_mat, error in errors:
                     self.log("info_file", error)
                 self.log("info", "Rerunning Failed Depletions", 8)
                 # And re-run in serial
-                for i, _ in errors:
-                    mat = self.materials[i]
+                for i_mat, _ in errors:
+                    mat = self.materials[i_mat]
                     lib = self.depletion_libs[mat.depl_lib_name]
                     mtx = self.depletion.compute_library(lib, mat.flux),
                     idxs = lib.isotope_indices
@@ -784,12 +1082,15 @@ class Reactor(LoggedClass):
                     mat.apply_new_composition(new_isos, new_fracs, new_density)
 
     def _deplete_step(self, log_msg, dt, depletion_step, use_power,
-                      num_substeps, is_zero_power, is_endpoint=False,
-                      is_corrector_step=False, label=None):
+                      num_substeps, is_zero_power, user_tallies_adder_i,
+                      include_user_tallies, is_endpoint=False, is_corrector_step=False,
+                      is_cecm=False, label=None,
+                      renormalize_power_density=False):
         """Advances one step, factoring in if the neutronics computation
         is necessary or not."""
 
         self.log("info", log_msg, 8)
+        user_tally_res={}
 
         if label is None:
             step_label = "{}; {}: {}".format(self.case_label,
@@ -800,7 +1101,6 @@ class Reactor(LoggedClass):
         if not is_zero_power:
             # Set the defaults, applicable primarily to predictor step
             store_input = True
-            user_tallies = True
             user_output = True
             deplete_tallies = True
             fname = \
@@ -813,21 +1113,24 @@ class Reactor(LoggedClass):
                                           self.step_idx) + "e"
             elif is_corrector_step:
                 store_input = False
-                user_tallies = False
+                user_tallies_adder_i = {}
+                include_user_tallies = False
                 user_output = False
                 fname = STEP_FNAME.format(self.case_idx, self.operation_idx,
                                           self.step_idx) + "c"
 
             # Execute the neutronics solver and get the results
-            keff, keff_stddev, flux, nu, volumes = \
+            keff, keff_stddev, flux, nu, volumes, user_tally_res = \
                 self.neutronics.execute(fname, step_label, self.materials,
                                         self.depletion_libs, store_input,
-                                        deplete_tallies, user_tallies,
-                                        user_output, self.fast_forward)
+                                        deplete_tallies, user_tallies_adder_i,
+                                        include_user_tallies, user_output,
+                                        self.fast_forward)
+            self.user_tally_res = user_tally_res
         else:
             # Set the dummy values we need to so the rest of the
             # processing can proceed
-            keff, keff_stddev = 0.0, 0.0
+            keff, keff_stddev, nu = 0.0, 0.0, 0.0
 
             # Create a flux result that has 0s, and get the volumes
             # from the last time
@@ -842,9 +1145,8 @@ class Reactor(LoggedClass):
             # time through the above loop just to get the num of groups
             flux = OrderedDict.fromkeys(mat_ids,
                                         value=np.zeros(material.num_groups))
-
-            # Nu will just be 1.0 since it doesnt matter
-            nu = 1.0
+            # user tally res to zero
+            user_tally_res = {}
             fname = "none"
 
         # Store the output filename
@@ -856,8 +1158,14 @@ class Reactor(LoggedClass):
 
         # Update the depletion constants before we print to file
         if not is_endpoint:
-            self._update_depletion_constants(flux, nu, keff, use_power,
-                                             volumes)
+            if is_cecm:
+                dt_fission = 0. if is_corrector_step else dt*2.
+            else:
+                dt_fission = dt
+            self._update_depletion_constants(flux, nu, keff, use_power,volumes,
+                                              user_tally_res, is_zero_power, dt_fission,
+                                             renormalize_power_density=renormalize_power_density)
+
 
         if not is_corrector_step:
             # Store the results to the HDF5 file
@@ -871,7 +1179,8 @@ class Reactor(LoggedClass):
 
         return output_name
 
-    def _deplete_cecm(self, dt, depletion_step, use_power, num_substeps):
+    def _deplete_cecm(self, dt, depletion_step, use_power, num_substeps,
+                      user_tallies_adder_i, include_user_tallies, renormalize_power_density=False):
         """Performs the CE/CM method (constant extrap on predictor and
         constant midpoint on corrector, i.e., predictor-corrector."""
 
@@ -890,7 +1199,9 @@ class Reactor(LoggedClass):
                                                      self.operation_label, dt)
         fname = self._deplete_step(log_msg, 0.5 * dt, depletion_step,
                                    use_power, num_substeps, False,
-                                   label=step_label)
+                                   user_tallies_adder_i, include_user_tallies,
+                                   is_cecm = True, label = step_label,
+                                   renormalize_power_density = renormalize_power_density)
 
         # Now with the inventories from the half-time step
         # (from predictor), we re-compute the fluxes in the next
@@ -900,8 +1211,10 @@ class Reactor(LoggedClass):
         step_label = "{}; {}: {} [corrector]".format(self.case_label,
                                                      self.operation_label, dt)
         fname = self._deplete_step(log_msg, dt, depletion_step, use_power,
-                                   num_substeps, False, is_corrector_step=True,
-                                   label=step_label)
+                                   num_substeps, False,  user_tallies_adder_i,
+                                   include_user_tallies, is_corrector_step=True,
+                                   is_cecm = True, label = step_label,
+                                   renormalize_power_density = renormalize_power_density)
 
         # Now put the original material inventories back in so we can
         # do the corrector step depletion
@@ -919,8 +1232,10 @@ class Reactor(LoggedClass):
         return fname
 
     def deplete(self, delta_ts, cumulative_time_steps, powers,
-                fluxes, num_substeps=0, solution_method="cecm",
-                execute_endpoint=True):
+                fluxes,  user_tallies_adder_i, include_user_tallies,
+                num_substeps=0, solution_method="cecm", execute_endpoint=True,
+                renormalize_power_density=False):
+
         """Deplete the model according to a given power history.
 
         Parameters
@@ -947,6 +1262,10 @@ class Reactor(LoggedClass):
             option, the classical predictor-corrector approach.
         execute_endpoint : bool, optional
             Whether the last neutronics computation should be computed or not.
+        user_tallies: dict
+            Dictionary of tally objects with keys corresponding to their identifiers.
+        renormalize_power_density : bool, optional
+            If True, power density is renormalized to total input power.
         """
 
         # Handle selection of power or flux as an input
@@ -1007,7 +1326,9 @@ class Reactor(LoggedClass):
                 log_msg = "Executing Zero-Power Depletion"
                 output_file = \
                     self._deplete_step(log_msg, delta_ts[i], depletion_step,
-                                       use_power, num_substeps, True)
+                                       use_power, num_substeps, True,
+                                       user_tallies_adder_i, include_user_tallies,
+                                       renormalize_power_density = renormalize_power_density)
             else:
 
                 if delta_ts[i] == 0.:
@@ -1015,20 +1336,25 @@ class Reactor(LoggedClass):
                     output_file = \
                         self._deplete_step(log_msg, delta_ts[i],
                                            depletion_step, use_power,
-                                           num_substeps, False)
-
+                                           num_substeps, False,
+                                           user_tallies_adder_i, include_user_tallies,
+                                           renormalize_power_density = renormalize_power_density)
                 else:
                     if solution_method == "predictor":
                         log_msg = "Executing Predictor"
                         output_file = \
                             self._deplete_step(log_msg, delta_ts[i],
                                                depletion_step, use_power,
-                                               num_substeps, False)
+                                               num_substeps, False,
+                                               user_tallies_adder_i, include_user_tallies,
+                                               renormalize_power_density = renormalize_power_density)
 
                     elif solution_method == "cecm":
                         output_file = \
                             self._deplete_cecm(delta_ts[i], depletion_step,
-                                               use_power, num_substeps)
+                                               use_power, num_substeps,
+                                               user_tallies_adder_i, include_user_tallies,
+                                               renormalize_power_density = renormalize_power_density)
 
             # Advance our time and update states accordingly
             start_time = end_time
@@ -1056,7 +1382,9 @@ class Reactor(LoggedClass):
             log_msg = "Evaluating {} End Point".format(self.operation_label)
             output_file = self._deplete_step(log_msg, 0., depletion_step,
                                             use_power, num_substeps,
-                                            zero_power, is_endpoint=True)
+                                            zero_power, user_tallies_adder_i,
+                                            include_user_tallies, is_endpoint=True,
+                                            renormalize_power_density = renormalize_power_density)
             self.step_idx += 1
 
     def shuffle(self, start_name, to_names, shuffle_type):
@@ -1099,7 +1427,7 @@ class Reactor(LoggedClass):
                                 self.materials, self.depletion_libs)
 
     def transform(self, names, yaw, pitch, roll, angle_units, matrix,
-                  displacement, transform_type):
+                  displacement, transform_type, matrix_notation, reset):
         """Transforms the universe named `name` according to the angles in
         yaw, pitch, and roll and the translation in displacement.
 
@@ -1127,7 +1455,14 @@ class Reactor(LoggedClass):
             The type of object to transform; this depends on the actual
             neutronics solver type; this could be "material" or
             "universe", for example.
-
+        matrix_notation : {"common", "mcnp"}
+            The notation used to define the rotation matrix. The matrix with
+            the MCNP notation corresponds to the transpose of the matrix defined
+            w/ the common mathematical notation ("common") to perform geometrical 
+            rotation.
+        reset : bool
+            If True, the position of the entity is reset to the initial one 
+            provided in the MCNP base input file.
         """
 
         if transform_type == "group":
@@ -1143,6 +1478,8 @@ class Reactor(LoggedClass):
             msg += ")"
         else:
             msg = "Transforming {} {}".format(transform_type, names[0])
+        if reset:
+            msg += " (after being reset to initial location)"
         self.log("info", msg, 6)
 
         # Extract group info, if provided
@@ -1159,24 +1496,26 @@ class Reactor(LoggedClass):
                 yaw_, pitch_, roll_, displacement_ = \
                     get_transform_args(val, axis_)
                 matrix_ = None
+                matrix_notation_="mcnp"
             else:
                 msg = "Invalid Control Group {}".format(names)
                 self.log("error", msg)
         else:
             # Just provide the re-name of variables
             names_, yaw_, pitch_, roll_, angle_units_, matrix_, displacement_, \
-                transform_type_ = \
+                transform_type_, matrix_notation_ = \
                 names, yaw, pitch, roll, angle_units, matrix, displacement, \
-                transform_type
+                transform_type, matrix_notation
 
         self.neutronics.transform(names_, yaw_, pitch_, roll_, angle_units_,
-                                  matrix_, displacement_, transform_type_)
+                                  matrix_, displacement_, transform_type_,
+                                  matrix_notation=matrix_notation_,reset=reset)
 
         # Modify group displacement as needed
         if transform_type == "group":
             self.control_groups[names].displacement = val
 
-    def geom_sweep(self, group_name, values):
+    def geom_sweep(self, group_name, values, user_tallies_adder_i):
         """Performs a sweep of geometric transformations and executes the
         neutronics solver on each, storing the results for the user. This is
         useful for performing rod sweeps, for example.
@@ -1215,7 +1554,7 @@ class Reactor(LoggedClass):
 
         # Set the default values to use for each case
         store_input = False
-        user_tallies = True
+        include_user_tallies = False
         user_output = True
         deplete_tallies = False
         # Sweep through each of the deltas, setup our transform,
@@ -1227,7 +1566,7 @@ class Reactor(LoggedClass):
             # Perform the transform
             self.neutronics.transform(names, yaw, pitch, roll, angle_units,
                                       matrix, displacement, transform_type,
-                                      transform_in_place=False)
+                                      transform_in_place=False, reset=False)
 
             # Execute the neutronics solver for this case
             fname = STEP_FNAME.format(self.case_idx, self.operation_idx,
@@ -1238,12 +1577,12 @@ class Reactor(LoggedClass):
                 update_iso_status = True
             else:
                 update_iso_status = False
-            keff, keff_stddev, _, _, _ = \
+            keff, keff_stddev, _, _, _, _ = \
                 self.neutronics.execute(fname, step_label, self.materials,
                                         self.depletion_libs, store_input,
-                                        deplete_tallies, user_tallies,
-                                        user_output, self.fast_forward,
-                                        update_iso_status)
+                                        deplete_tallies, user_tallies_adder_i,
+                                        include_user_tallies, user_output,
+                                        self.fast_forward,update_iso_status)
 
             # And store results
             self.keff = keff
@@ -1259,11 +1598,12 @@ class Reactor(LoggedClass):
         yaw, pitch, roll, displacement = get_transform_args(-values[-1], axis)
         self.neutronics.transform(names, yaw, pitch, roll, angle_units,
                                   matrix, displacement, transform_type,
-                                  transform_in_place=False)
+                                  transform_in_place=False, reset=False) 
 
-    def geom_search(self, group_name, k_target, bracket_interval,
-                    target_interval, uncertainty_fraction, initial_guess,
-                    min_active_batches, max_iterations):
+    def geom_search(self, group_name, k_target, bracket_interval, 
+                    reference_position, target_interval, 
+                    uncertainty_fraction, 
+                    initial_guess, min_active_batches, max_iterations):
         """Performs a search of geometric transformations to identify that
         which yields the target k-eigenvalue within the specified interval.
 
@@ -1275,14 +1615,20 @@ class Reactor(LoggedClass):
             The target k-eigenvalue to search for
         bracket_interval : Iterable of float
             The lower and upper end of the ranges to search.
+        reference_position : str or float
+            The reference point for the bracket_interval values.
+            'initial' denotes the initial position of the
+            control group in the neutronics input; whereas
+            'last' referes to the last known position of the
+            control group. If float, the value is the position.
         target_interval : float
             The range around the k_target for which is considered success
         uncertainty_fraction : float
             This parameter sets the stochastic uncertainty to target when the
             initial computation of an iteration reveals that a viable solution
             may exist.
-        initial_guess : float
-            The starting point to search
+        initial_guess : float or str
+            The starting point to search. If "last", use the last position.
         min_active_batches : int
             The starting number of batches to run to ensure enough keff samples
             so that it follows the law of large numbers. This is the number of
@@ -1303,23 +1649,62 @@ class Reactor(LoggedClass):
             axis = grp.axis
             transform_type = grp.type
             angle_units = grp.angle_units
-            val = -grp.displacement
-            if val != 0.:
-                yaw, pitch, roll, displacement = get_transform_args(val, axis)
-                self.neutronics.transform(names, yaw, pitch, roll,
-                                          angle_units, matrix, displacement,
-                                          transform_type,
-                                          transform_in_place=False)
+            # Define reference position for the bracket_interval 
+            # and set initial_guess
+            if reference_position == "initial": 
+                val = 0.0
+                reset = True
+                msg =  'Reference position (0.0 of interval) set to "initial".'
+                if initial_guess == "last":
+                    attempt_guess = grp.displacement
+            elif reference_position == "last":
+                val = 0.0
+                reset = False
+                msg = 'Reference position (0.0 of interval) set to "last".'
+                if initial_guess == "last":
+                    attempt_guess = 0.0
+            else:
+                val = float(reference_position)
+                reset = True
+                msg = 'Reference position (0.0 of interval) set to specific value.'
+                if initial_guess == "last":
+                    attempt_guess = grp.displacement - val
+            self.log("info", msg, 6)
+
+
+            yaw, pitch, roll, displacement = get_transform_args(val, axis)
+            self.neutronics.transform(names, yaw, pitch, roll,
+                                      angle_units, matrix, displacement,
+                                      transform_type,
+                                      transform_in_place=False, reset=reset)
         else:
             msg = "Invalid Control Group {}".format(group_name)
             self.log("error", msg)
 
+        # Reset the attempt_guess to the upper limit of the bracket_interval 
+        # if the last position is not within it
+        if initial_guess == "last":
+            if (attempt_guess <= bracket_interval[0] or 
+                attempt_guess > bracket_interval[1]):
+                attempt_guess = bracket_interval[1]
+                msg = 'Last position outside of bracket interval. '
+                msg += 'Using upper bound as initial guess.'
+                initial_guess = bracket_interval[1]
+            else:
+                msg = 'Using last position as initial guess.'
+                initial_guess = attempt_guess
+            self.log("info", msg, 6)
+        elif not initial_guess == bracket_interval[1]:
+            self.log("info", f'Using {initial_guess:.3f} as initial guess.', 6)
+        
+        # Perform search
         converged, iterations, value, keff, keff_stddev = \
             self.neutronics.geom_search(transform_type, axis, names,
-                angle_units, k_target, bracket_interval, target_interval,
+                angle_units, k_target, bracket_interval, reference_position, 
+                target_interval,
                 uncertainty_fraction, initial_guess, min_active_batches,
                 max_iterations, self.materials, self.case_idx,
-                self.operation_idx, self.depletion_libs)
+                self.operation_idx, self.depletion_libs, self.user_tallies_adder_i)
 
         # Print the log messages
         if converged and value not in bracket_interval:
@@ -1343,11 +1728,11 @@ class Reactor(LoggedClass):
         yaw, pitch, roll, displacement = get_transform_args(value, axis)
         self.neutronics.transform(names, yaw, pitch, roll, angle_units,
                                   matrix, displacement, transform_type,
-                                  transform_in_place=False)
+                                  transform_in_place=False, reset=False)
 
         # Update results
         self.keff = keff
-        self.keff_stddev = self.keff
+        self.keff_stddev = keff_stddev
         self.control_groups[group_name].displacement = value
         self.update_hdf5()
 
@@ -1575,8 +1960,8 @@ class Reactor(LoggedClass):
 
         return this
 
-    def write_neutronics_input(self, fname, deplete_tallies, user_tallies,
-                               user_output):
+    def write_neutronics_input(self, fname, deplete_tallies, user_tallies_adder_i,
+                               include_user_tallies, user_output):
         """This method writes the neutronics input to disk
 
         Parameters
@@ -1587,7 +1972,9 @@ class Reactor(LoggedClass):
             The options relevant to each neutronics solver
         deplete_tallies : bool
             Whether or not to write the tallies needed for depletion
-        user_tallies : bool
+        user_tallies_adder_i : dict
+            Whether or not to write the user tallies
+        include_user_tallies : dict
             Whether or not to write the user tallies
         user_output : bool
             Whether or not to write the user's output control cards
@@ -1598,7 +1985,8 @@ class Reactor(LoggedClass):
                                   self.step_idx)
         self.neutronics.write_input(fname, label, self.materials,
                                     self.depletion_libs, False,
-                                    deplete_tallies, user_tallies, user_output)
+                                    deplete_tallies, user_tallies_adder_i,
+                                    include_user_tallies, user_output)
         self.update_hdf5()
 
     def process_operations(self, ops, no_deplete, fast_forward):
@@ -1630,19 +2018,30 @@ class Reactor(LoggedClass):
         # Now process the operations
         self.log("info", "Processing Operations", 0)
         self.operation_idx = 0
+
+        current_case = ""
         for op in ops:
             self.step_idx = 1
             if len(op) == 4:
-                # Then this includs the case label too, so lets print and assign it
+                current_op = ""
+                # Then this include the case label too, so lets print and assign it
                 case_label, op_label, method_name, method_args = op[:]
-                self.log("info", "Executing Case Block: {}".format(case_label))
-                # And update the case label
-                self.case_label = case_label
-                self.case_idx += 1
-                self.operation_idx = 1
+                # if statement to avoid multiple increment on the same case subsection
+                if current_case != case_label:
+                    current_case = case_label
+                    self.log("info", "Executing Case Block: {}".format(case_label))
+                    # And update the case label
+                    self.case_label = case_label
+                    self.case_idx += 1
+                    self.operation_idx = 1
+
             else:
                 op_label, method_name, method_args = op[:]
-                self.operation_idx += 1
+                # if to avoid multiple increment on the same operation subsection
+                if current_op != op_label:
+                    current_op = op_label
+                    self.operation_idx += 1
+
             # Assign the operation label
             self.operation_label = op_label
             self.log("info", "Executing Operation: {}".format(op_label), 4)
@@ -1723,7 +2122,7 @@ def get_depletion(solver_type, exec_cmd, num_threads, num_procs, chunksize):
         return Depletion(exec_cmd, num_threads, num_procs, chunksize)
 
 
-def par_depl_init(my_depletion, my_dt, my_depletion_step, my_num_substeps):
+def parallel_init(my_depletion, my_dt, my_step, my_substeps):
     # Pre-load the variables for the depletion worker, this is one way that
     # is used to pass multiple arguments to a parallelized function (here,
     # that parallelized func is depletion_worker). Separate benchmarking
@@ -1736,25 +2135,22 @@ def par_depl_init(my_depletion, my_dt, my_depletion_step, my_num_substeps):
 
     depletion = my_depletion
     dt = my_dt
-    depletion_step = my_depletion_step
-    num_substeps = my_num_substeps
+    depletion_step = my_step
+    num_substeps = my_substeps
 
 
-def depletion_worker(args):
-    i, mat, mtx, idxs, inv_idxs = args
+def parallel_worker(i_mat):
+    mat = global_mats[i_mat]
+    lib = global_libs[mat.depl_lib_name]
+    matrix = depletion.compute_library(lib, mat._flux)
 
-    # Handle exceptions gracefully at the highest level.
     try:
-        result = depletion.execute(mat, mtx, idxs, inv_idxs, dt,
+        result = depletion.execute(mat, matrix, lib.isotope_indices,
+                                   lib.inverse_isotope_indices, dt,
                                    depletion_step, num_substeps, False)
-        result = (i, *result)
+        result = (i_mat, *result)
     except Exception:
         # instead, convert the traceback to an error string
         error = traceback.format_exc()
-        result = (i, error, None, None)
+        result = (i_mat, error, None, None)
     return result
-
-def library_worker(args):
-    i, depletion, flux, lib = args
-    return (i, depletion.compute_library(lib, flux),
-            lib.isotope_indices, lib.inverse_isotope_indices)

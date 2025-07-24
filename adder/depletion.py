@@ -114,7 +114,7 @@ class Depletion(object):
     @chunksize.setter
     def chunksize(self, chunksize):
         check_type("chunksize", chunksize, int)
-        check_greater_than("chunksize", chunksize, 0)
+        check_greater_than("chunksize", chunksize, -1)
         self._chunksize = chunksize
 
     def compute_decay(self, depl_lib):
@@ -124,8 +124,9 @@ class Depletion(object):
 
     def compute_library(self, depl_lib, flux):
         """Computes and returns the total library,
-        decay + flux-induces reactions. For ORIGEN this is a lib string,
-        for CRAM this is the sparse matrix"""
+        decay + flux-induces reactions. This method requires that the decay
+        data already be computed via Depletion.compute_decay().
+        For ORIGEN this is a lib string, for CRAM this is the sparse matrix"""
         pass
 
     def init_h5_file(self, h5_file):
@@ -135,9 +136,9 @@ class Depletion(object):
 
         # Store the runtime options as root attributes
         h5_file.attrs["num_depletion_threads"] = self.num_threads
-        h5_file.attrs["depletion_chunksize"] = self.num_threads
-        h5_file.attrs["depletion_solver"] = np.string_(self.solver)
-        h5_file.attrs["depletion_exec"] = np.string_(self.exec_cmd)
+        h5_file.attrs["depletion_chunksize"] = self.chunksize
+        h5_file.attrs["depletion_solver"] = np.bytes_(self.solver)
+        h5_file.attrs["depletion_exec"] = np.bytes_(self.exec_cmd)
 
     def execute(self, material, A_matrix, iso_indices, inv_iso_indices,
                 duration, depletion_step, num_substeps, is_serial=True):
@@ -167,9 +168,8 @@ class Depletion(object):
 
         Returns
         -------
-        new_isos : Iterable of 3-tuple (str, str, bool)
-            A list of the isotope name (str), the xs library (str), and whether
-            it is depleting (bool). There is one of these 3-tuples per isotope.
+        new_isos : np.ndarray
+            The IsotopeRegistry indices of each isotope
         new_fracs : np.ndarray
             A 1-D vector containing the depleted atom fractions for each of
             the isotopes in new_isos

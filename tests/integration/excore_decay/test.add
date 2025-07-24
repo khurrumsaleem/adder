@@ -18,6 +18,9 @@ depletion_method = predictor
             neutronics_id_end = 2
             depleting = True
             use_default_depletion_library = True
+        [[[item]]]
+            neutronics_id = 2
+            density = 1.0
 
     [[storage]]
         [[[copy]]]

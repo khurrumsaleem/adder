@@ -11,7 +11,8 @@ from adder.input_validation import *
 from adder.isotope import *
 from adder.control_group import ControlGroup
 from adder.material import Material
+from adder.mcnp.tally import Tally
 from adder.neutronics import Neutronics
 from adder.depletion import Depletion
 
-__version__ = '1.0.1'
+__version__ = '1.1.0'

@@ -58,6 +58,14 @@ output_hdf5 = results.h5
         name = "fresh_tall"
         set = 61, 62
 
+[tallies]
+    [[list_mat]]
+        tally_ids = 14, 24, 34, 44
+        type = material
+    [[item_detect]]
+        tally_id = 4
+        type = material
+
 [operations]
     [[state 1]]
         label = "Cycle 1"
@@ -93,6 +101,7 @@ output_hdf5 = results.h5
            z_flip = True
         [[[write_input_1]]]
             filename = "state5.inp"
+            include_user_tallies = False
         [[[revolve_2]]]
            set = 62, 12
            shape = 1, 1, 2
@@ -100,6 +109,7 @@ output_hdf5 = results.h5
            z_flip = False
         [[[write_input_2]]]
             filename = "state6.inp"
+            include_user_tallies = False
     [[Cycle 6]]
         [[[transform]]]
            set = 11, 12, 21, 22, 31, 32, 42
@@ -108,10 +118,13 @@ output_hdf5 = results.h5
            angle_units = degrees
         [[[write_input]]]
             filename = "state7.inp"
+            include_user_tallies = False
         [[[transform_2]]]
            set = 11
            type = cell
            matrix = 0.,  1.,  0., -1.,  0.,  0., 0.,  0.,  1.
            angle_units = degrees
         [[[write_input_2]]]
-            filename = "state8.inp"
+           filename = "state8.inp"
+           include_user_tallies = False
+

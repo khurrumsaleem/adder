@@ -26,6 +26,7 @@ c lower-case comment
 1 1 1.0 -2 imp:n=1 imp:p 2
 2 2 -1.0 2 -3 IMP:N=1 ImP:P=2.5
 3 0 3 imp:n,p=0 $ inline comment
+4 3 1.0 -2 imp:n,p=0
 """
 
 surf_block = """
@@ -43,6 +44,7 @@ mat_block = """
 m0 nlib=70c
 m1 92235.71c 1.0 8016 2.0
 m2 92238.72c -0.88 8016 -.12 nlib=71c
+m3 1004.80c 1.0
 """
 
 # The data block will not include specific cards to actually test handling of,
@@ -78,7 +80,7 @@ cf1 2
 cm1 1.
 sf1 1
 f4:n 1
-fm4 1
+fm4 (1)(1 1 (1 -4)(-2))((1 1 102)(1 -1 2 1)(1 -1 5 1 6 2 7 3))  
 fq4 1
 ft4 1
 fs4 1
@@ -91,17 +93,16 @@ Em4 1
 t4 1
 tf4 1
 tm4 1
-F14X:n 1
-f14y:n 1
-f14z:n 1
+F14:n 1
 kpert14 1
 ksen14 1
+fic5:n 1
+fip15:n 1
+fir25:n 1
+f35:n 1
+de35 1
+df35 1
 fmesh24:n data=1.0
-fic34:n 1
-fip34:n 1
-fir34:n 1
-de44 1
-df44 1
 c tmesh block
 tmesh
     cmesh1:n 1
@@ -156,9 +157,15 @@ def test_mcnp_readwrite(simple_lib):
     user_univ_info = {}
     shuffled_mats = set()
     shuffled_univs = set()
+    
+    # materials for multiplier card
+    mat_block_multiplier = """m5 92235.71c 1.0 8016 2.0
+    m6 92238.72c -0.88 8016 -.12 nlib=71c
+    m7 92235.71c 1.0 8016 2.0
+    """
 
     # Write the input file
-    start_inp = "".join([cell_block, surf_block, mat_block, data_block, ""])
+    start_inp = "".join([cell_block, surf_block, mat_block, mat_block_multiplier, data_block, ""])
     with open(fname, "w+") as f:
         f.write(start_inp)
     # And the xsdir file
@@ -166,29 +173,34 @@ def test_mcnp_readwrite(simple_lib):
         f.write(xsdir)
 
     # Now we can get the data
-    test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+    neut_lib_isos = test_neut.parse_library(lib_file)
+    test_mats = test_neut.read_input(num_neutron_groups,
                                      user_mats_info, user_univ_info,
                                      shuffled_mats, shuffled_univs, depl_libs)
-
+    
     # Now lets check test_mats and the assigned parameters of test_neut
     assert test_mats[0].name == user_mats_info[1]["name"]
     assert test_mats[0].id == 1
     assert test_mats[0].is_depleting == user_mats_info[1]["depleting"]
-    assert test_mats[0].isotopes[0].name == "U235"
-    assert test_mats[0].isotopes[0].is_depleting is True
-    assert test_mats[0].isotopes[0].xs_library == "71c"
-    assert test_mats[0].isotopes[1].name == "O16"
-    assert test_mats[0].isotopes[1].is_depleting is True
-    assert test_mats[0].isotopes[1].xs_library == "70c"
+
+    assert test_mats[0].isotope_obj(0).name == "U235"
+    assert test_mats[0].isotope_obj(0).is_depleting is True
+    assert test_mats[0].isotope_obj(0).xs_library == "71c"
+    assert test_mats[0].isotope_obj(1).name == "O16"
+    assert test_mats[0].isotope_obj(1).is_depleting is True
+    assert test_mats[0].isotope_obj(1).xs_library == "70c"
     assert len(test_mats[0].isotopes_to_keep_in_model) == 2
     assert sorted(test_mats[0].isotopes_to_keep_in_model) == \
         sorted({'U235', 'O16'})
-    assert test_mats[1].isotopes[0].name == "U238"
-    assert test_mats[1].isotopes[0].is_depleting is True
-    assert test_mats[1].isotopes[0].xs_library == "72c"
-    assert test_mats[1].isotopes[1].name == "O16"
-    assert test_mats[1].isotopes[1].is_depleting is False
-    assert test_mats[1].isotopes[1].xs_library == "71c"
+    assert test_mats[1].isotope_obj(0).name == "U238"
+    assert test_mats[1].isotope_obj(0).is_depleting is True
+    assert test_mats[1].isotope_obj(0).xs_library == "72c"
+    assert test_mats[2].isotope_obj(0).name == "H4"
+    assert test_mats[2].isotope_obj(0).is_depleting is False
+    assert test_mats[2].isotope_obj(0).xs_library == "80c"
+    assert test_mats[1].isotope_obj(1).name == "O16"
+    assert test_mats[1].isotope_obj(1).is_depleting is False
+    assert test_mats[1].isotope_obj(1).xs_library == "71c"
     assert len(test_mats[1].isotopes_to_keep_in_model) == 0
     np.testing.assert_allclose(test_mats[0].atom_fractions,
                                [1. / 3., 2. / 3.], rtol=1e-15)
@@ -204,6 +216,7 @@ def test_mcnp_readwrite(simple_lib):
     ref_num_density = 1. * 0.6022140857 / np.dot([m_238, m_16], ref_fracs)
     assert test_mats[1].density == ref_num_density
 
+
     # Now check the data of the neutronics class
     assert test_neut.xsdir_file == lib_file
     ref_xsdir_data = \
@@ -214,7 +227,9 @@ def test_mcnp_readwrite(simple_lib):
          "54135.72c": 133.748000, "53135.70c": 133.750000,
          "53135.71c": 133.750000, "53135.72c": 133.750000,
          "8016.70c": 15.857510, "8016.71c": 15.857510, "8016.72c": 15.857510,
-         "1001.70c":0.999167, "1001.71c": 0.999167, "1001.72c": 0.999167}
+         "3006.70c": 5.9634, "3006.71c": 5.9634, "3006.72c": 5.9634,
+         "1001.70c": 0.999167, "1001.71c": 0.999167, "1001.72c": 0.999167,
+         "1004.80c": 0.999167, "lwtr.10t": 0.999167}
     # Check the dictionary
     assert len(test_neut.neutronics_isotopes) == len(ref_xsdir_data)
     assert sorted(test_neut.neutronics_isotopes.keys()) == \
@@ -230,18 +245,18 @@ def test_mcnp_readwrite(simple_lib):
 
     # Check the cells
     ref_cell_data = \
-        {"id": [1, 2, 3], "material_id": [1, 2, 0],
-         "material": [test_mats[0], test_mats[1], None],
-         "density": [1., ref_num_density, 0.], "surfaces": ["-2", "2 -3", "3"],
-         "coord_transform": [None, None, None], "universe_id": [0, 0, 0],
-         "lattice": [None, None, None], "fill_type": [None, None, None],
-         "fill_dims": [None, None, None],
-         "fill_transforms": [None, None, None], "_fill": [None, None, None],
-         "fill_ids": [None, None, None], "volume": [None, None, None],
+        {"id": [1, 2, 3, 4], "material_id": [1, 2, 0, 3],
+         "material": [test_mats[0], test_mats[1], None, test_mats[2]],
+         "density": [1., ref_num_density, 0., 1.], "surfaces": ["-2", "2 -3", "3", "-2"],
+         "coord_transform": [None, None, None, None], "universe_id": [0, 0, 0, 0],
+         "lattice": [None, None, None, None], "fill_type": [None, None, None, None],
+         "fill_dims": [None, None, None, None],
+         "fill_transforms": [None, None, None, None], "_fill": [None, None, None, None],
+         "fill_ids": [None, None, None, None], "volume": [None, None, None, None],
          "other_kwargs": [{"imp:n": "1", "imp:p": "2"},
                           {"imp:n": "1", "imp:p": "2.5"},
-                          {"imp:n,p": "0"}]}
-    for c in range(3):
+                          {"imp:n,p": "0"}, {"imp:n,p": "0"}]} #imp:n,p=0
+    for c in range(4):
         cell = test_neut.cells[ref_cell_data["id"][c]]
         for attrib in ref_cell_data.keys():
             # Density needs a floating point compare, the rest are direct:
@@ -260,11 +275,12 @@ def test_mcnp_readwrite(simple_lib):
 
     # We already checked the specific cells, lets just make sure the right
     # ones were assigned.
-    assert list(test_neut.universes[0].cells.keys()) == [1, 2, 3]
-    assert [c.id for c in test_neut.universes[0].cells.values()] == [1, 2, 3]
+    assert list(test_neut.universes[0].cells.keys()) == [1, 2, 3, 4]
+    assert [c.id for c in test_neut.universes[0].cells.values()] == [1, 2, 3, 4]
 
-    assert test_neut.max_user_tally_id == 44
-    assert test_neut.multiplier_mat_ids == set()
+    assert test_neut.max_user_tally_id == 35
+    assert test_neut.multiplier_mat_ids == set([1,2,5,6,7])
+    
     assert len(test_neut.coord_transforms) == 1
     # Should only have the default null transform
     assert test_neut.coord_transforms[0].is_null is True
@@ -294,16 +310,21 @@ def test_mcnp_readwrite(simple_lib):
     ref_surface = ["2 cz 2.", "*3 cx 3."]
     ref_material = \
         ["m0 nlib=70c", "m1 92235.71c 1.0 8016 2.0",
-         "m2 92238.72c -0.88 8016 -.12 nlib=71c"]
+         "m2 92238.72c -0.88 8016 -.12 nlib=71c",
+         "m3 1004.80c 1.0",
+         "m5 92235.71c 1.0 8016 2.0", 
+         "m6 92238.72c -0.88 8016 -.12 nlib=71c",
+         "m7 92235.71c 1.0 8016 2.0"]
     ref_tally = \
-        ["f1:p 1", "c1 0.5 1.0", "cf1 2", "cm1 1.", "sf1 1", "f4:n 1", "fm4 1",
+        ["f1:p 1", "cf1 2", "c1 0.5 1.0", "cm1 1.", "sf1 1", "fc4 comment", "f4:n 1",
+         "fm4 (1)(1 1 (1 -4)(-2))((1 1 102)(1 -1 2 1)(1 -1 5 1 6 2 7 3))",
          "fq4 1", "ft4 1", "fs4 1", "sd4 1", "fu4 1", "pert4:n 1",
-         "fc4 comment", "e4 0.5 20.0", "Em4 1", "t4 1", "tf4 1", "tm4 1",
-         "F14X:n 1", "f14y:n 1", "f14z:n 1", "kpert14 1", "ksen14 1",
-         "fmesh24:n data=1.0", "fic34:n 1", "fip34:n 1", "fir34:n 1",
-         "de44 1", "df44 1", "tmesh", "cmesh1:n 1", "cora1 1", "corb1 1",
-         "corc1 1", "ergsh1 1", "mshmf1 1", "rmesh1:n 1", "smesh1:n",
-         "gobble", "endmd"]
+          "e4 0.5 20.0", "Em4 1", "t4 1", "tf4 1", "tm4 1",
+         "f14:n 1", "kpert14 1", "ksen14 1",
+          "fic5:n 1", "fip15:n 1", "fir25:n 1",
+         "f35:n 1", "de35 1", "df35 1", "fmesh24:n data=1.0"]
+    ref_tmesh = ["tmesh", "cmesh1:n 1", "cora1 1", "corb1 1", "corc1 1", "ergsh1 1",
+                "mshmf1 1", "rmesh1:n 1", "smesh1:n", "gobble", "endmd"]
     ref_output = ["mplot 1", "print 10", "prdmp 1 1 1 1 1", "ptrac file=asc",
                   "histp -lhist=-1 1", "dbcn 1"]
     ref_other = \
@@ -323,10 +344,18 @@ def test_mcnp_readwrite(simple_lib):
          "mp 1"]
 
     for key, ref in zip(["message", "title", "material", "tally",
-                         "output", "other"],
+                         "tmesh", "output", "other"],
                         [ref_message, ref_title, ref_material,
-                         ref_tally, ref_output, ref_other]):
-        assert test_neut.base_input[key] == ref
+                         ref_tally, ref_tmesh, ref_output, ref_other]):
+        # check for test_neut.base_input for string comparison.
+        if key != "tally":
+            assert test_neut.base_input[key] == ref
+        # check for test_neut.base_input[tally], which is a list of tally
+        else:
+            base_input_tally = []
+            for tally in test_neut.base_input[key]:
+                base_input_tally.extend(tally.get_tally_block())
+            assert base_input_tally == ref
     # Now check the ref surfaces
     for i, surf in enumerate([test_neut.surfaces[2], test_neut.surfaces[3]]):
         assert str(surf) == ref_surface[i]
@@ -334,8 +363,11 @@ def test_mcnp_readwrite(simple_lib):
     # Now we can write the output file for comparison
     # This one will include the user's tallies and output
     out_name = "output.inp"
+    # suppose setting in ADDER the same tally for mcnp tallies.
+    user_tallies = {"1": "universe", "4": "universe", "14": "universe", "5": "universe",
+                    "15": "universe", "25": "universe", "35": "universe", "24": "universe"}
     test_neut.write_input(out_name, "test", test_mats, depl_libs, False, False,
-                          True, True)
+                          user_tallies, True, True)
     with open(out_name, "r") as f:
         test_out = f.readlines()
     os.remove(out_name)
@@ -344,14 +376,23 @@ def test_mcnp_readwrite(simple_lib):
     # Create the reference solutions
     ref_cell_block = ["1 1 1.0000000000000E+00 -2 u=0 imp:n=1 imp:p=2",
                       "2 2 6.7442405203693E-03 2 -3 u=0 imp:n=1 imp:p=2.5",
-                      "3 0 3 u=0 imp:n,p=0"]
+                      "3 0 3 u=0 imp:n,p=0", "4 3 1.0000000000000E+00 -2 u=0 imp:n,p=0"]
 
     ref_mat_block = \
         ["c ADDER Material Name: mat1",
          "m1 92235.71c 3.333333E-01 8016.70c 6.666667E-01",
          "c ADDER Material Name: 2",
          "m2 92238.72c {:1.6E} 8016.71c {:1.6E}".format(ref_fracs[0],
-                                                        ref_fracs[1])]
+                                                        ref_fracs[1]),
+         "c ADDER Material Name: 3",
+         "m3 1004.80c 1.000000E+00",
+         "c Multiplier Material Name: 5",
+         "m5 92235.71c 3.333333E-01 8016.70c 6.666667E-01",
+         "c Multiplier Material Name: 6",
+         "m6 92238.72c {:1.6E} 8016.71c {:1.6E}".format(ref_fracs[0],
+                                                        ref_fracs[1]),
+         "c Multiplier Material Name: 7",
+         "m7 92235.71c 3.333333E-01 8016.70c 6.666667E-01",]
     ref_out_file = ref_message + [""] + [ref_title + " test"] +  \
         ref_cell_block + [""] + ref_surface + [""] + ref_mat_block + \
         ["PRINT 10 60 128 130", "PRDMP 1 1 1 1 1", "mplot 1", "ptrac file=asc",
@@ -371,7 +412,7 @@ def test_mcnp_readwrite(simple_lib):
          "mode 1",
          "mphys 1",
          "mx 1",
-         "mp 1"] + ref_tally + [""]
+         "mp 1"] + ["c User tallies"] + ref_tally + ref_tmesh + [""]
     ref_out = [line + "\n" for line in ref_out_file]
     assert len(test_out) == len(ref_out)
     for i in range(len(test_out)):
@@ -379,13 +420,13 @@ def test_mcnp_readwrite(simple_lib):
 
     # Now we need to verify that it does not write each of user output
     # and user tallies. We will do this one at a time.
-    # Without print output, we lose the user's print table 10 command and the
-    # mplot command
-    ref_out[14] = "PRINT 60 128 130\n"
-    ref_out[15] = "PRDMP 0 0 1\n"
-    del ref_out[16:20]
+    # Without print output, we lose the user's print table 10 command, the 
+    # multiplier materials the mplot command
+    ref_out[23] = "PRINT 60 128 130\n"
+    ref_out[24] = "PRDMP 0 0 1\n"
+    del ref_out[25:29]
     test_neut.write_input(out_name, "test", test_mats, depl_libs, False, False,
-                          True, False)
+                          user_tallies, True, False, False)
     with open(out_name, "r") as f:
         test_out = f.readlines()
     os.remove(out_name)
@@ -393,13 +434,15 @@ def test_mcnp_readwrite(simple_lib):
     for i in range(len(test_out)):
         assert test_out[i] == ref_out[i]
 
-    # And now we will lose the user's tallies
-    del ref_out[33: -1]
+    # And now we will lose the multiplier materials and user's tallies 
+    del ref_out[17:23]
+    del ref_out[36: -1]
     test_neut.write_input(out_name, "test", test_mats, depl_libs, False, False,
-                          False, False)
+                          {}, False, False)
     with open(out_name, "r") as f:
         test_out = f.readlines()
     os.remove(out_name)
+    del test_out[-12:-1]
     assert len(test_out) == len(ref_out)
     for i in range(len(test_out)):
         assert test_out[i] == ref_out[i]
@@ -451,7 +494,8 @@ def test_mcnp_input_errors(simple_lib):
         # The next command should raise a ValueError due to the presence of the
         # error card.
         with pytest.raises(ValueError):
-            test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+            neut_lib_isos = test_neut.parse_library(lib_file)
+            test_mats = test_neut.read_input(num_neutron_groups,
                                              user_mats_info, user_univ_info,
                                              shuffled_mats, shuffled_univs,
                                              depl_libs)
@@ -512,12 +556,13 @@ def test_mcnp_pass_input(simple_lib):
             f.write(start_inp)
         test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                               True, 1.e-3, False)
-        test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+        neut_lib_isos = test_neut.parse_library(lib_file)
+        test_mats = test_neut.read_input(num_neutron_groups,
                                          user_mats_info, user_univ_info,
                                          shuffled_mats, shuffled_univs,
                                          depl_libs)
         test_neut.write_input(out_name, "test", test_mats, depl_libs, False,
-                              False, False, False)
+                              False, {}, True,False, )
         with open(out_name, "r") as f:
             test_out = f.readlines()
         os.remove(out_name)
@@ -584,12 +629,14 @@ def test_mcnp_card_to_cell(simple_lib):
             f.write(start_inp)
         test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                               True, 1.e-3, False)
-        test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+        neut_lib_isos = test_neut.parse_library(lib_file)
+        test_mats = test_neut.read_input(num_neutron_groups,
                                          user_mats_info, user_univ_info,
                                          shuffled_mats, shuffled_univs,
                                          depl_libs)
         test_neut.write_input(out_name, "test", test_mats, depl_libs, False,
-                              False, False, False, False)
+                              False, {}, True,False,
+                              False)
         with open(out_name, "r") as f:
             test_out = f.readlines()
         os.remove(out_name)
@@ -648,11 +695,12 @@ def test_mcnp_like_but_cell(simple_lib):
         f.write(start_inp)
     test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                           True, 1.e-3, False)
-    test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+    neut_lib_isos = test_neut.parse_library(lib_file)
+    test_mats = test_neut.read_input(num_neutron_groups,
                                      user_mats_info, user_univ_info,
                                      shuffled_mats, shuffled_univs, depl_libs)
     test_neut.write_input(out_name, "test", test_mats, depl_libs, False, False,
-                          False, False, False)
+                          {}, True,False, False)
     with open(out_name, "r") as f:
         test_out = f.readlines()
     os.remove(out_name)
@@ -713,7 +761,8 @@ def test_mcnp_xscards(simple_lib):
 
     test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1, True,
                                           1.e-3, False)
-    _ = test_neut.read_input(lib_file, num_neutron_groups, user_mats_info,
+    neut_lib_isos = test_neut.parse_library(lib_file)
+    _ = test_neut.read_input(num_neutron_groups, user_mats_info,
                              user_univ_info, shuffled_mats, shuffled_univs,
                              depl_libs)
     # Now check test_neut.allowed_isotopes for valid values based on
@@ -728,7 +777,9 @@ def test_mcnp_xscards(simple_lib):
          "54135.72c": 133.748000, "53135.70c": 133.750000,
          "53135.71c": 133.750000, "53135.72c": 133.750000,
          "8016.70c": 15.857510, "8016.71c": 15.857510, "8016.72c": 15.857510,
-         "1001.70c": 0.999167, "1001.71c": 0.999167, "1001.72c": 0.999167}
+         "3006.70c": 5.9634, "3006.71c": 5.9634, "3006.72c": 5.9634,
+         "1001.70c": 0.999167, "1001.71c": 0.999167, "1001.72c": 0.999167,
+         "1004.80c": 0.999167, "lwtr.10t": 0.999167}
     # XS1 and XS2 cards add in 2 5010 values
     ref_xsdir_data["5010.70c"] = 10.0
     ref_xsdir_data["5010.71c"] = 10.1
@@ -784,12 +835,13 @@ def test_mcnp_material_parsing_error(caplog, simple_lib):
 
     test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                           True, 1.e-3, False)
+    neut_lib_isos = test_neut.parse_library(lib_file)
     # The next command should raise an error via the logger. In this case
     # we look for SystemExit and then read in the captured logger output
     # to compare with expectations
     caplog.clear()
     with pytest.raises(SystemExit):
-        test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+        test_mats = test_neut.read_input(num_neutron_groups,
                                          user_mats_info, user_univ_info,
                                          shuffled_mats, shuffled_univs,
                                          depl_libs)
@@ -829,12 +881,13 @@ def test_mcnp_material_parsing_error(caplog, simple_lib):
 
         test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                               True, 1.e-3, False)
+        neut_lib_isos = test_neut.parse_library(lib_file)
         # The next command should raise an error via the logger. In this case
         # we look for SystemExit and then read in the captured logger output
         # to compare with expectations
         caplog.clear()
         with pytest.raises(SystemExit):
-            test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+            test_mats = test_neut.read_input(num_neutron_groups,
                                              user_mats_info, user_univ_info,
                                              shuffled_mats, shuffled_univs,
                                              depl_libs)
@@ -880,7 +933,8 @@ def test_mcnp_material_is_depleting(simple_lib):
     # Have the parserload up the info on this model
     test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                           True, 1.e-3, False)
-    test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+    neut_lib_isos = test_neut.parse_library(lib_file)
+    test_mats = test_neut.read_input(num_neutron_groups,
                                      user_mats_info, user_univ_info,
                                      shuffled_mats, shuffled_univs,
                                      depl_libs)
@@ -890,9 +944,11 @@ def test_mcnp_material_is_depleting(simple_lib):
     # True/False is whether or not it is depleting (based on if present in
     # simplelib)
     ref_mat_iso_info = [[('U235', '71c', True), ('O16', '70c', False)],
-                        [('U238', '72c', True), ('O16', '71c', False)]]
+                        [('U238', '72c', True), ('O16', '71c', False)],
+                        [('H4', '80c', False)]]
     for i, mat in enumerate(test_mats):
-        for j, iso in enumerate(mat.isotopes):
+        for j in range(mat.num_isotopes):
+            iso = mat.isotope_obj(j)
             assert iso.name == ref_mat_iso_info[i][j][0]
             assert iso.xs_library == ref_mat_iso_info[i][j][1]
             assert iso.is_depleting == ref_mat_iso_info[i][j][2]
@@ -908,13 +964,15 @@ def test_mcnp_material_is_depleting(simple_lib):
     user_mats_info[1]["non_depleting_isotopes"] = ['U235']
     test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                           True, 1.e-3, False)
-    test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+    neut_lib_isos = test_neut.parse_library(lib_file)
+    test_mats = test_neut.read_input(num_neutron_groups,
                                      user_mats_info, user_univ_info,
                                      shuffled_mats, shuffled_univs,
                                      depl_libs)
     ref_mat_iso_info[0][0] = ('U235', '71c', False)
     for i, mat in enumerate(test_mats):
-        for j, iso in enumerate(mat.isotopes):
+        for j in range(mat.num_isotopes):
+            iso = mat.isotope_obj(j)
             assert iso.name == ref_mat_iso_info[i][j][0]
             assert iso.xs_library == ref_mat_iso_info[i][j][1]
             assert iso.is_depleting == ref_mat_iso_info[i][j][2]
@@ -974,11 +1032,12 @@ c lower-case comment
 
         test_neut = adder.mcnp.McnpNeutronics("", "mcnp.EXE", fname, 1, 1,
                                               True, 1.e-3, False)
+        neut_lib_isos = test_neut.parse_library(lib_file)
         # The next command should create our materials and leave log msgs
         caplog.clear()
 
         # Now parse the input
-        test_mats = test_neut.read_input(lib_file, num_neutron_groups,
+        test_mats = test_neut.read_input(num_neutron_groups,
                                          user_mats_info, user_univ_info,
                                          shuffled_mats, shuffled_univs,
                                          depl_libs)

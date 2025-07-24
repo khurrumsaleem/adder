@@ -285,7 +285,7 @@ def get_metadata(zaid, metastable_scheme='mcnp'):
     ----------
     zaid : int
         ZAID (1000*Z + A) obtained from a library
-    metastable_scheme : {'nndc', 'mcnp'}
+    metastable_scheme : {'mcnp'}
         Determine how ZAID identifiers are to be interpreted in the case of
         a metastable nuclide. Because the normal ZAID (=1000*Z + A) does not
         encode metastable information, different conventions are used among
@@ -293,6 +293,7 @@ def get_metadata(zaid, metastable_scheme='mcnp'):
         for a metastable nuclide except for Am242m, for which 95242 is
         metastable and 95642 (or 1095242 in newer libraries) is the ground
         state. For NNDC libraries, ZAID is given as 1000*Z + A + 100*m.
+        Currently, the processing of NNDC libraries is disabled.
     Returns
     -------
     name : str
@@ -309,7 +310,7 @@ def get_metadata(zaid, metastable_scheme='mcnp'):
     """
 
     check_type('zaid', zaid, int)
-    check_value('metastable_scheme', metastable_scheme, ['nndc', 'mcnp'])
+    check_value('metastable_scheme', metastable_scheme, ['mcnp'])
 
     Z = zaid // 1000
     mass_number = zaid % 1000
@@ -329,12 +330,16 @@ def get_metadata(zaid, metastable_scheme='mcnp'):
                 metastable = 0
             else:
                 metastable = 1 if mass_number > 300 else 0
-    elif metastable_scheme == 'nndc':
-        metastable = 1 if mass_number > 300 else 0
+    # metastable state processing needs to be fixed if re-enabled.
+    # elif metastable_scheme == 'nndc':
+    #    metastable = 1 if mass_number > 300 else 0
 
-    while mass_number > 3 * Z:
-        mass_number -= 100
-
+    if (metastable!=0 or zaid == 95642) and zaid != 95242 and mass_number > 300:
+        # 50998.99m, 50999.99m are older XS for fission-product pairs
+        if zaid == 50998 or zaid == 50999:
+            mass_number = 228
+        else:
+            mass_number = mass_number - 400
     # Determine name
     element = ATOMIC_SYMBOL[Z]
     name = gnd_name(Z, mass_number, metastable)

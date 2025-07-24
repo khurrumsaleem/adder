@@ -75,7 +75,7 @@ class ExCoreHarness(TestHarness):
         depllib.add_isotope("He4", decay=he4dk)
 
         # U235
-        u235xs = ReactionData("b", 1)
+        u235xs = ReactionData()
         u235xs.add_type("fission", "b", [1.0])
         u235dk = DecayData(1.0, "d", 5.)
         u235dk.add_type("alpha", 1., ["Th231"])

@@ -57,7 +57,8 @@ class CoordTransform(object):
     _USED_IDS = set([])
 
     def __init__(self, id_=None, displacement=None, rotation_angles=None,
-                 rotation_matrix=None, m_flag=True, in_degrees=False):
+                 rotation_matrix=None, m_flag=True, in_degrees=False, 
+                 matrix_notation="mcnp"):
         self.id = id_
         self.m_flag = m_flag
         self.displacement = displacement
@@ -75,20 +76,29 @@ class CoordTransform(object):
                 const = 1.  # No conversion
 
             # Now build the rotation matrices
-            alpha, beta, gamma = np.asarray(rotation_angles) * const
+            alpha, beta, gamma = np.asarray(rotation_angles, dtype=float) * const
             ca, sa = np.cos(alpha), np.sin(alpha)
             cb, sb = np.cos(beta), np.sin(beta)
             cg, sg = np.cos(gamma), np.sin(gamma)
 
+            	# Rotation matrix in "mcnp" matrix notation
             R = np.array([
-                [ca * cb, ca * sb * sg - sa * cg, ca * sb * cg + sa * sg],
-                [sa * cb, sa * sb * sg + ca * cg, sa * sb * cg - ca * sg],
-                [-sb, cb * sg, cb * cg]])
+                [ca * cb, sa * cb, -sb],
+                [ca * sb * sg - sa * cg, sa * sb * sg + ca * cg, cb * sg],
+                [ca * sb * cg + sa * sg, sa * sb * cg - ca * sg, cb * cg]])
+            
             # It is very likely for there to be values very nearly 0 (6e-17)
             # after the sin/cos. Just set them to zero
-            R[np.abs(R) < 5. * np.finfo(np.float).eps] = 0.
+            R[np.abs(R) < 5. * np.finfo(np.float64).eps] = 0.
             self._rotation_matrix = R
         else:
+            # Transpose of "common" matrix and check matrix notation
+            if matrix_notation=="common":
+                rotation_matrix=np.transpose(rotation_matrix)
+            elif matrix_notation!="common" and matrix_notation!="mcnp":  
+                msg="matrix_notation parameter \""+matrix_notation+ \
+                    "\" is wrong!" + " Use mcnp or common."
+                raise ValueError(msg)
             self.set_rotation_matrix(rotation_matrix, in_degrees)
 
     def __del__(self):
@@ -166,7 +176,7 @@ class CoordTransform(object):
             # Convert from degrees, if needed
             if in_degrees:
                 matrix = np.cos(matrix * np.pi / 180.)
-            matrix[np.abs(matrix) < 5. * np.finfo(np.float).eps] = 0.
+            matrix[np.abs(matrix) < 5. * np.finfo(np.float64).eps] = 0.
             # Now we can make an ndarray out of it and store, ensuring
             # it is a float64
             self._rotation_matrix = np.array(matrix, dtype=np.float64)
@@ -280,9 +290,9 @@ class CoordTransform(object):
         # Update displacement vector
         mod.displacement += that.displacement
 
-        # Update rotation matrix
-        mod.set_rotation_matrix(np.matmul(that.rotation_matrix,
-                                          mod.rotation_matrix), False)
+        # Update rotation matrix in MCNP matrix notation
+        mod.set_rotation_matrix(np.matmul(mod.rotation_matrix,
+                                          that.rotation_matrix), False)
 
         return mod
 

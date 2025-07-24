@@ -22,6 +22,9 @@ class Cell(object):
     ----------
     cell_id : int
         The cell's ID
+    parent_id: int
+        The parent cell's ID, from which the cell is duplicate.
+        None (default) corresponds to not duplicated cell
     material_id : int
         The id of the material in this cell
     density : float
@@ -44,6 +47,8 @@ class Cell(object):
         The type of fill, defaults to None
     fill_transforms : 3D Iterable of CoordTransform, or None, optional
         The id of the transform for each entry of the fill universe
+    initial_fill_transforms: 3D Iterable of CoordTransform, or None
+        The coordinate transform for the fill universe in the initial MCNP model
     fill_dims : 6-tuple of int, or None, optional
         if fill_type is "array", this is the index ranges in first z,
         y, and then x dimensions; defaults to None
@@ -67,6 +72,8 @@ class Cell(object):
         Volume of the region
     coord_transform : CoordTransform, optional
         The coordinate transform to apply to this cell; defaults to None
+    initial_coord_transform : CoordTransform, optional
+        The coordinate transform from the initial MCNP model; defaults to None
     universe_id : int
         The universe id of the region
     lattice : int
@@ -81,6 +88,8 @@ class Cell(object):
         The type of fill
     fill_transforms : 3D Iterable of CoordTransform, or None
         The id of the transform for each entry of the fill universe
+    initial_fill_transforms: 3D Iterable of CoordTransform, or None
+        The coordinate transform for the fill universe in the initial MCNP model
     fill_dims : 6-tuple of int, or None
         if fill_type is "array", this is the index ranges in first z,
         y, and then x dimensions
@@ -95,19 +104,31 @@ class Cell(object):
     def __init__(self, cell_id, material_id, density, surfaces, volume=None,
                  coord_transform=None, universe_id=ROOT_UNIV,
                  lattice=None, fill_ids=None, fill_type=None,
-                 fill_transforms=None, fill_dims=None,
-                 other_kwargs=OrderedDict()):
+                 fill_transforms=None, fill_dims=None, other_kwargs=OrderedDict(),
+                 parent_id=None):
         self.id = cell_id
+        self.parent_id=parent_id
         self.material_id = material_id
         self.material = None
         self.density = density
         self.surfaces = surfaces
         self.coord_transform = coord_transform
+        self.initial_coord_transform = coord_transform.clone(new_id=0) \
+            if coord_transform else None
         self.universe_id = universe_id
         self.lattice = lattice
         self.fill_type = fill_type
         self.fill_dims = fill_dims
         self.fill_transforms = fill_transforms
+        if (fill_transforms):
+            self.initial_fill_transforms = \
+                np.empty_like(fill_transforms).tolist()
+            for idz in range(len(fill_transforms)):
+                for idy in range(len(fill_transforms[idz])):
+                    for idx in range(len(fill_transforms[idz][idy])):
+                        ftr = self.fill_transforms[idz][idy][idx]
+                        self.initial_fill_transforms[idz][idy][idx] = \
+                            ftr.clone(new_id=0) if ftr else None
         self._fill = None
         self.fill_ids = fill_ids
         self.volume = volume
@@ -128,6 +149,21 @@ class Cell(object):
             check_less_than("id", id_, CELL_MAX_ID, equality=True)
             self._id = id_
             Cell._USED_IDS.add(self._id)
+
+    @property
+    def parent_id(self):
+        return self._parent_id
+
+    @parent_id.setter
+    def parent_id(self, parent_id_):
+        if parent_id_ is not None:
+            check_type("parent_id", parent_id_, int)
+            check_greater_than("parent_id", parent_id_, 0, equality=False)
+            check_less_than("parent_id", parent_id_, CELL_MAX_ID, equality=True)
+            self._parent_id = parent_id_
+            Cell._USED_IDS.add(self._parent_id)
+        else:
+            self._parent_id = parent_id_
 
     @property
     def material(self):
@@ -333,10 +369,10 @@ class Cell(object):
                         if u not in [USE_LAT_IRREG, USE_LAT_MAT]:
                             statuses.append(u.status)
 
-        if np.all(np.asarray(statuses) == statuses[0]):
+        if np.all(np.asarray(statuses, dtype=int) == statuses[0]):
             return statuses[0]
         else:
-            msg = "Material and/or Universes of Cell {} do not have the" \
+            msg = "Material and/or Universes of Cell {} do not have the " \
                 "same status!"
             warn(msg.format(self.id))
 
@@ -495,7 +531,21 @@ class Cell(object):
                 for j in range(len(self.fill_transforms[k])):
                     for i in range(len(self.fill_transforms[k][j])):
                         if self.fill_transforms[k][j][i] == old_tr:
-                            self.fill_transforms[k][j][i] = new_tr
+                            self.fill_transforms[k][j][i] = new_tr  
+
+    def revert_fill_transforms(self, loc=None): 
+        # Reverts the fill_transforms attribute to initial_fill_transforms
+        if loc:
+            idz_range, idy_range, idx_range = ([loc[0]], [loc[1]], [loc[2]]) 
+        else:
+            Nx, Ny, Nz = np.array(self.fill_transforms).shape
+            idz_range, idy_range, idx_range = (range(Nz), range(Ny), range(Nx))
+        
+        for idz in idz_range:
+            for idy in idy_range:
+                for idx in idx_range:
+                    self.fill_transforms[idz][idy][idx] = \
+                        self.initial_fill_transforms[idz][idy][idx]
 
     def clone(self, depl_libs, model_univs, model_cells, model_mats):
         """Create a copy of this Cell with a new unique ID and new IDs
@@ -537,13 +587,17 @@ class Cell(object):
 
         # Now set the new id to be figured out by the setter
         cell_id = None
-
-        # Create the clone
+        if self.parent_id == None:
+            cell_parent_id = self.id
+        else:
+            cell_parent_id = self.parent_id
+        # Create the clone. None id creates a default id.
         clone = Cell(cell_id, material_id, density, surfaces, volume,
                      coord_transform, universe_id, lattice, fill_ids,
-                     fill_type, fill_transforms, fill_dims, other_kwargs)
+                     fill_type, fill_transforms, fill_dims, other_kwargs,
+                     cell_parent_id)
 
-        msg = "Cell {} cloned as {}".format(self.id, clone.id)
+        msg = "Cell {} cloned as {}".format(clone.parent_id, clone.id)
         logs = [("info_file", msg, None)]
         # Update the global cells
         model_cells[clone.id] = clone

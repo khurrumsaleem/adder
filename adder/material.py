@@ -6,7 +6,7 @@ import h5py
 
 from adder.data import atomic_mass
 from adder.depletionlibrary import DecayData, ReactionData
-from adder.isotope import *
+import adder.isotope
 import adder.constants as constants
 from adder.type_checker import *
 from adder.utils import get_id
@@ -22,6 +22,9 @@ class Material(object):
     id_ : int
         The identifier of the material, as referred to in the neutronics
         solver.
+    parent_id: int
+        The parent material's ID, from which the material is duplicate.
+        None (default) corresponds to not duplicated material
     density : float
         The material density in units of a/b-cm
     isotope_data : Iterable of tuples
@@ -60,11 +63,11 @@ class Material(object):
         Whether or not this material is to be depleted.
     density : float
         The material density in units of a/b-cm
-    isotopes : Iterable of adder.Isotopes
-        The isotopes within the material.
-    atom_fractions : Iterable of float
+    isotopes : numpy.ndarray of uint16
+        The indices in the Isotope Registry of isotopes within the material.
+    atom_fractions : numpy.ndarray of np.double
         The fractions of the density of the constituent isotopes.
-    number_densities : numpy.ndarray
+    number_densities : numpy.ndarray of np.double
         The number densities of each isotope
     volume : float
         The volume of the material in units of cm^3.
@@ -73,12 +76,15 @@ class Material(object):
         storage.
     flux : np.ndarray of float
         The group-wise flux
+    power_density : float
+        Power density in W/cm3
+    fission_density : float
+        Fission density in fissions/cm3
+    burnup : float
+        Burnup in MWd
     default_xs_library : str
         The default xs library to apply to isotopes as introduced by
         depletion or otherwise.
-    num_groups : int
-        The number of groups in the depletion library, and thus the
-        size of the flux array
     thermal_xs_libraries : List of str.
         This provides the names of the associated thermal scattering
         libraries, if needed. Defaults to a blank list, indicating no
@@ -98,11 +104,13 @@ class Material(object):
 
     def __init__(self, name, id_, density, isotope_data,
                  atom_fractions, is_depleting, default_xs_library,
-                 num_groups, thermal_xs_libraries, status, check=True):
+                 num_groups, thermal_xs_libraries, status, check=True,
+                 parent_id=None):
         self.name = name
         self.id = id_
+        self.parent_id = parent_id
         self.density = density
-        self.isotopes = [isotope_factory(*data) for data in isotope_data]
+        self.isotopes = isotope_data
         self.atom_fractions = atom_fractions
         self.is_depleting = is_depleting
         # Volumes will be over-written after the neutronics solver runs
@@ -110,8 +118,11 @@ class Material(object):
         self.status = status
         self.is_default_depletion_library = False
         self.depl_lib_name = constants.BASE_LIB
-        self.num_groups = num_groups
-        self.flux = np.zeros(self.num_groups)
+        self.flux = np.zeros(num_groups)
+        self._flux_1g = 0.
+        self.power_density = 0.
+        self.fission_density = 0.
+        self.burnup = 0.
         self.default_xs_library = default_xs_library
         self.thermal_xs_libraries = thermal_xs_libraries
         self.isotopes_in_neutronics = True
@@ -139,19 +150,6 @@ class Material(object):
 
         if check:
             self.check()
-
-    def __getstate__(self):
-        selfdict = self.__dict__.copy()
-        nope = ['_id', '_is_depleting', '_volume', '_status',
-            '_depl_lib_name', '_num_groups', '_is_default_depletion_library',
-            '_thermal_xs_libraries', '_isotopes_in_neutronics', 'Q',
-            'num_copies', '_h5_path', 'h5_status_change', 'logs', '_USED_IDS']
-        for key in nope:
-            try:
-                del selfdict[key]
-            except:
-                pass
-        return selfdict
 
     @property
     def name(self):
@@ -188,6 +186,22 @@ class Material(object):
             Material._USED_IDS.add(self._id)
 
     @property
+    def parent_id(self):
+        return self._parent_id
+
+    @parent_id.setter
+    def parent_id(self, parent_id_):
+        if parent_id_ is not None:
+            check_type("parent_id", parent_id_, int)
+            check_greater_than("parent_id", parent_id_, 0, equality=False)
+            check_less_than("parent_id", parent_id_, constants.MATL_MAX_ID, equality=True)
+            self._parent_id = parent_id_
+            Material._USED_IDS.add(self._parent_id)
+        else:
+            self._parent_id = parent_id_
+
+
+    @property
     def density(self):
         return self._density
 
@@ -211,7 +225,7 @@ class Material(object):
         n = self.number_densities
         n_dot_amu = 0.
         for i in range(len(n)):
-            n_dot_amu += n[i] * atomic_mass(self._isotopes[i].name)
+            n_dot_amu += n[i] * atomic_mass(self.isotope_obj(i).name)
         mass_density = n_dot_amu / constants.AVOGADRO
         return mass_density
 
@@ -220,9 +234,14 @@ class Material(object):
         return self._isotopes
 
     @isotopes.setter
-    def isotopes(self, isotopes):
-        check_iterable_type("isotopes", isotopes, Isotope)
-        self._isotopes = isotopes
+    def isotopes(self, isotope_data):
+        try:
+            check_iterable_type('isotopes', isotope_data, np.uint16)
+            self._isotopes = isotope_data
+        except TypeError:
+            self._isotopes = np.array(
+                [np.uint16(adder.isotope.ISO_REGISTRY.register_isotope(*data))
+                 for data in isotope_data], dtype=np.uint16)
 
     @property
     def atom_fractions(self):
@@ -236,7 +255,8 @@ class Material(object):
             check_greater_than("atom_fractions", val, 0., equality=True)
         # Modify the atom fractions to sum to 1.0
         tot_frac = np.sum(atom_fractions)
-        norm_frac = [user_frac / tot_frac for user_frac in atom_fractions]
+        norm_frac = np.array([user_frac / tot_frac
+                              for user_frac in atom_fractions], dtype=np.double)
         self._atom_fractions = norm_frac[:]
 
     @property
@@ -246,6 +266,12 @@ class Material(object):
     @status.setter
     def status(self, status):
         check_value("status", status, constants.ALLOWED_STATUSES)
+        try:
+            if not status == self._status:
+                # Update the hdf5 status change flag
+                self.h5_status_change = True
+        except AttributeError:
+            pass
         self._status = status
 
     @property
@@ -311,24 +337,21 @@ class Material(object):
 
     @isotopes_in_neutronics.setter
     def isotopes_in_neutronics(self, isotopes_in_neutronics):
-        if isinstance(isotopes_in_neutronics, bool):
+        if isinstance(isotopes_in_neutronics, (bool, np.bool_)):
             self._isotopes_in_neutronics = \
-                [isotopes_in_neutronics] * self.num_isotopes
+                np.full(self.num_isotopes, np.bool_(isotopes_in_neutronics),
+                        dtype=np.bool_)
         else:
             check_iterable_type("isotopes_in_neutronics",
-                                isotopes_in_neutronics, bool)
+                                isotopes_in_neutronics, (bool, np.bool_))
             check_length("isotopes_in_neutronics", isotopes_in_neutronics,
                          self.num_isotopes)
-            self._isotopes_in_neutronics = isotopes_in_neutronics[:]
+            self._isotopes_in_neutronics = np.array(
+                isotopes_in_neutronics, dtype=np.bool_)
 
     @property
     def num_groups(self):
-        return self._num_groups
-
-    @num_groups.setter
-    def num_groups(self, num_groups):
-        check_type("num_groups", num_groups, int)
-        self._num_groups = num_groups
+        return self._flux.shape[0]
 
     @property
     def flux(self):
@@ -342,21 +365,54 @@ class Material(object):
         self.h5_status_change = True
 
     @property
+    def power_density(self):
+        return self._power_density
+
+    @power_density.setter
+    def power_density(self, power_density):
+        check_type("power_density", power_density, float)
+        self._power_density = power_density
+        self.h5_status_change = True
+
+    @property
+    def fission_density(self):
+        return self._fission_density
+
+    @fission_density.setter
+    def fission_density(self, fission_density):
+        check_type("fission_density", fission_density, float)
+        self._fission_density = fission_density
+        self.h5_status_change = True
+
+    @property
+    def burnup(self):
+        return self._burnup
+
+    @burnup.setter
+    def burnup(self, burnup):
+        check_type("burnup", burnup, float)
+        self._burnup = burnup
+        self.h5_status_change = True
+
+    @property
     def flux_1g(self):
         return self._flux_1g
 
     @property
     def number_densities(self):
-        N = self._density * np.asarray(self._atom_fractions) * 1.E24
+        N = self._density * np.asarray(self._atom_fractions, dtype=float) * 1.E24
         return N
 
     @property
     def num_isotopes(self):
         return len(self._isotopes)
 
+    def isotope_obj(self, i):
+        return adder.isotope.ISO_REGISTRY._isos[int(self._isotopes[i])]
+
     @property
     def isotope_names(self):
-        return [iso.name for iso in self._isotopes]
+        return [self.isotope_obj(i).name for i in range(self.num_isotopes)]
 
     def __repr__(self):
         return "<Material Name: {}, Id: {}, is_depleting: {}>".format(
@@ -383,7 +439,7 @@ class Material(object):
             if self._atom_fractions[i] == 0.:
                 to_remove.append(i)
         for i in to_remove:
-            msg = f'{self._isotopes[i].name} in Material {self._name} ' \
+            msg = f'{self.isotope_obj(i).name} in Material {self._name} ' \
                 f'(id: {self._id}) was removed as it has a zero atom fraction'
             self.logs.append(("info_file", msg, None))
             self.remove_isotope_by_index(i)
@@ -391,14 +447,10 @@ class Material(object):
     def remove_isotope_by_index(self, idx):
         # Remove an isotope by deleting the entries in:
         # isotopes, atom_fractions, and isotopes_in_neutronics
-        for items in (self._isotopes, self._atom_fractions,
-                      self._isotopes_in_neutronics):
-            if isinstance(items, list):
-                items.pop(idx)
-            else:
-                raise NotImplementedError(
-                    "remove_isotope_by_index "
-                    "currently only implemented for lists")
+        self._isotopes = np.delete(self._isotopes, idx)
+        self._atom_fractions = np.delete(self._atom_fractions, idx)
+        self._isotopes_in_neutronics = np.delete(
+            self._isotopes_in_neutronics, idx)
 
     def establish_initial_isotopes(self, apply_threshold_to_initial):
         """Sets the list of isotopes that should not be subject to the
@@ -427,8 +479,9 @@ class Material(object):
 
         # If we make it here, then we have the information we need
         stable = DecayData(None, "s", 0.)
-        zero_xs = ReactionData("b", lib.num_neutron_groups)
-        for i, iso in enumerate(self._isotopes):
+        zero_xs = ReactionData()
+        for i in range(self.num_isotopes):
+            iso = self.isotope_obj(i)
             if iso.name not in lib.initial_isotopes:
                 # The isotope is not in the depletion library, flag it as
                 # non-depleting
@@ -436,11 +489,12 @@ class Material(object):
                     "in Material {} to non-depleting ".format(self._name) + \
                     "since it is not in the depletion library"
                 self.logs.append(("info_file", msg, None))
-                self._isotopes[i] = update_isotope_depleting_status(iso, False)
+                self._isotopes[i] = adder.isotope.ISO_REGISTRY.switch_iso_depleting_status(
+                    self._isotopes[i], False)
 
                 if iso.name not in lib.isotopes:
-                    # If this isotope wasnt already added to the list of isos,
-                    # then do it witha stable, 0 cross section version of
+                    # If this isotope wasn't already added to the list of isos,
+                    # then do it with a stable, 0 cross section version of
                     # the isotope in the library so that indexing works
                     # later on.
                     lib.add_isotope(iso.name, xs=zero_xs, decay=stable)
@@ -473,9 +527,7 @@ class Material(object):
         if self._is_depleting:
             # Spend the memory and make copies of the isotopic data as it
             # will change in time
-            isotopes = np.empty(self.num_isotopes, dtype=object)
-            for i, iso in enumerate(self._isotopes):
-                isotopes[i] = (iso.name, iso.xs_library, iso.is_depleting)
+            isotopes = np.copy(self._isotopes)
             atom_fractions = np.copy(self._atom_fractions)
             is_depleting = True
             flux = np.copy(self._flux)
@@ -493,7 +545,7 @@ class Material(object):
             Q = self.Q
             iso_in_neut = self._isotopes_in_neutronics
         default_xs_library = deepcopy(self._default_xs_library)
-        num_groups = deepcopy(self._num_groups)
+        num_groups = self.num_groups
         thermal_xs_libraries = deepcopy(self._thermal_xs_libraries)
         status = deepcopy(self._status)
 
@@ -503,6 +555,10 @@ class Material(object):
 
         # Set the new id
         id_ = None
+        if not self.parent_id:
+            parent_id = self.id
+        else:
+            parent_id = self.parent_id
 
         # Update the number of clones so we can keep our names up to date
         self.num_copies += 1
@@ -515,7 +571,7 @@ class Material(object):
 
         clone = Material(name, id_, density, isotopes, atom_fractions,
                          is_depleting, default_xs_library, num_groups,
-                         thermal_xs_libraries, status)
+                         thermal_xs_libraries, status, parent_id=parent_id)
 
         if not clone._is_depleting:
             # Then we have to go back and add back in the references to the
@@ -579,6 +635,11 @@ class Material(object):
         if not self._is_depleting:
             return tot_Q, tot_fiss_rate
 
+        # if zero tot flx, tot. energy release and fiss. rate are zero
+        if np.sum(np.asarray(self._flux, dtype=float)) == 0:
+            msg = f"Zero flux in material {self.name}"
+            self.logs.append(("warning", msg, 12))
+
         Q, FR = depl_lib.get_composition_Q_fiss_rate(self.isotope_names,
                                                      self._atom_fractions,
                                                      self._flux)
@@ -630,9 +691,9 @@ class Material(object):
         if self._flux_1g <= 0. and self.num_groups > 1:
             # We will only preclude the isotopes of the smallest concentrations
             for i in range(len(self._isotopes)):
+                iso = self.isotope_obj(i)
                 if self._atom_fractions[i] < 1.E-10 and \
-                        (self._isotopes[i].name
-                         not in self.isotopes_to_keep_in_model):
+                        (iso.name not in self.isotopes_to_keep_in_model):
                     self._isotopes_in_neutronics[i] = False
             return
         elif self._flux_1g <= 0.:
@@ -648,7 +709,7 @@ class Material(object):
         # isotope
         delta_rhos = np.zeros(len(self._isotopes))
         # Step through each isotope and determine delta_rho
-        iso_names = [iso.name for iso in self._isotopes]
+        iso_names = [self.isotope_obj(i).name for i in range(self.num_isotopes)]
         N = self.number_densities
         base_nufiss = lib.get_1g_macro_xs(iso_names, N, "nu-fission", flux)
         base_abs = lib.get_1g_macro_xs(iso_names, N, "absorb", flux)
@@ -697,9 +758,9 @@ class Material(object):
             # But dont neglect isotopes which we do not deplete
             # (otherwise they wouldnt be in the model), or those which are
             # identified as to be kept in the model
-            if self._isotopes[neglect_index].is_depleting and \
-                (self._isotopes[neglect_index].name
-                 not in self.isotopes_to_keep_in_model):
+            iso = self.isotope_obj(neglect_index)
+            if iso.is_depleting and (iso.name
+                                     not in self.isotopes_to_keep_in_model):
                 self._isotopes_in_neutronics[neglect_index] = False
 
     def get_library_number_density_vector(self, iso_indices):
@@ -720,7 +781,8 @@ class Material(object):
         n_vector = np.zeros(len(iso_indices))
 
         mat_N = self.number_densities
-        for i, iso in enumerate(self._isotopes):
+        for i in range(self.num_isotopes):
+            iso = self.isotope_obj(i)
             if iso.is_depleting:
                 # Then we include it so its effect on the decay chain is
                 # captured
@@ -729,7 +791,8 @@ class Material(object):
         return n_vector
 
     def calc_composition_from_number_densities(self, n_vector, iso_indices,
-        inv_iso_indices, scale_constant=None):
+                                               inv_iso_indices,
+                                               scale_constant=None):
         """Computes a new material inventory based on a number density
         returned from a depletion calculation using this depletion
         library.
@@ -754,12 +817,11 @@ class Material(object):
 
         Returns
         -------
-        new_isotopes : Iterable of 3-tuple (str, str, bool)
-            A list of the isotope name (str), the xs library (str), and whether
-            it is depleting (bool). There is one of these 3-tuples per isotope.
-        new_fractions : np.ndarray
+        new_isotopes : np.ndarray of np.uint16
+            The indices into the isotope registry for our new composition
+        new_fractions : np.ndarray of np.double
             A 1-D vector containing the atom fractions for each of the isotopes
-            in new_isos
+            in new_isotopes
         new_density : float
             The new material density in units of a/b-cm
 
@@ -772,12 +834,14 @@ class Material(object):
         original_N = self.number_densities
         non_depleting_indices = []
         non_depleting_non_library = []
-        for i, isotope in enumerate(self._isotopes):
+        for i in range(self.num_isotopes):
+            isotope = self.isotope_obj(i)
             name = isotope.name
+            idx = self._isotopes[i]
             # Using the same loop we will also create a dictionary of the
-            # xs_libraries so we can re-set these later
-            original_iso_metadata[name] = (isotope.xs_library,
-                                           isotope.is_depleting, original_N[i])
+            # original iso attributes so we can re-set these later
+            original_iso_metadata[name] = (idx, isotope.is_depleting,
+                                           original_N[i])
             if not isotope.is_depleting:
                 if name in iso_indices:
                     non_depleting_indices.append(iso_indices[name])
@@ -800,14 +864,19 @@ class Material(object):
             # originally, so if this isnt a new isotope, use the
             # previous xs library
             if iso_name in original_iso_metadata:
-                xs_library, is_depleting, orig_N = \
+                idx, is_depleting, orig_N = \
                     original_iso_metadata[iso_name]
+                # xs_lib and is_depleting is the same, so we can use the same
+                # isotope index
+                new_isotopes[j] = idx
             else:
-                # Then this is new so use the default
-                xs_library = self._default_xs_library
+                # Then this is new so use the default xs lib, set to is_depleting
+                # and get its index.
                 is_depleting = True
                 orig_N = None
-            new_isotopes[j] = (iso_name, xs_library, is_depleting)
+
+                new_isotopes[j] = adder.isotope.ISO_REGISTRY.get_isotope(
+                    iso_name, self._default_xs_library, True)
 
             # Now, if this isotope was not depleting, we need to get
             # back the original value
@@ -824,8 +893,8 @@ class Material(object):
         # whether it be bc they are not in the library or otherwise
         for iso_name in non_depleting_non_library:
             # Get the starting info
-            xs_library, is_depleting, orig_N = original_iso_metadata[iso_name]
-            new_isotopes.append((iso_name, xs_library, is_depleting))
+            idx, is_depleting, orig_N = original_iso_metadata[iso_name]
+            new_isotopes.append(idx)
             new_fractions = np.append(new_fractions, orig_N)
             new_density += orig_N
 
@@ -852,9 +921,8 @@ class Material(object):
 
         Parameters
         ----------
-        new_isos : Iterable of 3-tuple (str, str, bool)
-            A list of the isotope name (str), the xs library (str), and whether
-            it is depleting (bool). There is one of these 3-tuples per isotope.
+        new_isos : np.ndarray
+            An array of isotope indices from the isotope registry.
         new_fracs : np.ndarray
             A 1-D vector containing the atom fractions for each of the isotopes
             in new_isos
@@ -862,8 +930,7 @@ class Material(object):
             The new material density in units of a/b-cm
         """
 
-        self._isotopes = [isotope_factory(*iso) for iso in new_isos]
-        # Convert the atom fractions to an array
+        self._isotopes = np.array(new_isos, dtype=np.uint16)
         self._atom_fractions = new_fracs
         self._density = new_density
         self.h5_status_change = True
@@ -917,7 +984,7 @@ class Material(object):
         else:
             vol = -1.
         if self._thermal_xs_libraries:
-            xslibs = np.array([np.string_(xs)
+            xslibs = np.array([np.bytes_(xs)
                                for xs in self._thermal_xs_libraries])
             num_therm = len(xslibs)
         else:
@@ -942,17 +1009,22 @@ class Material(object):
             ('density', np.float64),
             ('volume', np.float64),
             ('flux', np.float64, (len(self._flux),)),
+            ('power_density', np.float64),
+            ('fission_density', np.float64),
+            ('burnup', np.float64),
             ('default_lib', 'S6'),
             ('thermal_libs', 'S20', (num_therm,)),
             ('atom_fractions', np.float64, (num_iso,)),
             ('iso_data', iso_dtype, (num_iso,))]
         # Now assign these values
         iso_vals = [None] * num_iso
-        for i, iso in enumerate(self._isotopes):
+        for i in range(self.num_isotopes):
+            iso = self.isotope_obj(i)
             iso_vals[i] = (iso.name, iso.is_depleting, iso.xs_library)
         vals = \
             [(self._id, self._is_depleting, self._status, self.num_copies,
              self._density, vol, self._flux,
+             self._power_density, self._fission_density, self._burnup,
              self._default_xs_library, xslibs, self._atom_fractions,
              iso_vals)]
         data = np.array(vals, dtype=np.dtype(struct))
@@ -995,6 +1067,9 @@ class Material(object):
             volume = None
         flux = data['flux'][0]
         num_groups = flux.shape[0]
+        power_density = data['power_density'][0]
+        burnup = data['burnup'][0]
+        fission_density = data['fission_density'][0]
         default_xs_library = data['default_lib'][0].decode()
         thermal_xs_libraries = [s.decode() for s in data['thermal_libs'][0]]
         if thermal_xs_libraries == ['']:
@@ -1016,6 +1091,9 @@ class Material(object):
         # Set the attributes that are set after initialization
         this.flux = flux
         this.volume = volume
+        this.power_density = power_density
+        this.burnup = burnup
+        this.fission_density = fission_density
         # We will disreagrd isotopes_in_neutronics data since that will be
         # re-populated whenever the information is written to the neutronics
         # input
